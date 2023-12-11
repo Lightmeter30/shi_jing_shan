@@ -1,0 +1,14 @@
+<!-- templates/upload_image.html -->
+{% load static %}
+<html>
+<head>
+    <title>Upload Image</title>
+</head>
+<body>
+    <form method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Upload Image</button>
+    </form>
+</body>
+</html>
