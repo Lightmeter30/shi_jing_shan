@@ -1,5 +1,8 @@
 # media_app/models.py
 from django.db import models
+import os
+import uuid
+
 
 class Video(models.Model):
     video = models.FileField(upload_to='videos/')

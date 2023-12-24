@@ -1,5 +1,7 @@
 { pkgs }: {
   deps = [
+    pkgs.tomcat10
+    pkgs.sqlite.bin
     pkgs.zlib
     pkgs.tk
     pkgs.tcl
