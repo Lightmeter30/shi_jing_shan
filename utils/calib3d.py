@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import os
-from PIL import Image
+from PIL import Image, ImageOps
 from scipy.optimize import least_squares, minimize
 from sklearn.linear_model import RANSACRegressor, LinearRegression
 
@@ -18,6 +18,7 @@ def save_to_jpg(image, save_path):
     # image.close()
     # pngImage = Image.frombytes(imagedata)
     pngImage = Image.open(image)
+    pngImage = ImageOps.exif_transpose(pngImage)
     pngImage.convert("RGB").save(save_path, "JPEG", quality=85)
     return save_path
 
@@ -138,7 +139,7 @@ class ReprojRegressor(LinearRegression):
 
 
 def DLS_pose_est(points3d, points2d, initial_params=np.array([1000, 1000, 500, 500, 0, 0, 0, 0, 0, 0]), threshold=None,
-                 useRANSAC=True,
+                 useRANSAC=True, max_trials=25,
                  bounds=np.array([[0, 3000], [0, 3000], [0, 2000], [0, 2000],
                                   [-10, 10], [-10, 10], [-10, 10],
                                   [-10, 10], [-10, 10], [-10, 10]])):
@@ -150,7 +151,7 @@ def DLS_pose_est(points3d, points2d, initial_params=np.array([1000, 1000, 500, 5
         reg = RANSACRegressor(base_estimator=ReprojRegressor(initial_params, bounds, verbose=1, method='lm'),
                               min_samples=max(np.ceil(len(points2d) * 0.01), 12),
                               loss=euclidean_err, residual_threshold=threshold,
-                              is_model_valid=ReprojRegressor.is_model_valid, random_state=0, max_trials=100)
+                              is_model_valid=ReprojRegressor.is_model_valid, random_state=0, max_trials=max_trials)
         reg = reg.fit(points3d, points2d)
         # if not reg.estimator_.success:
         #     reg.estimator_ = reg.estimator_.fit(points3d[reg.inlier_mask_], points2d[reg.inlier_mask_], nfev=50000)
@@ -201,7 +202,7 @@ class TriangleReprojRegressor(ReprojRegressor):
 
 def DLS_all_pose_est(points12, points2d, P1, P2,
                      initial_params=np.array([1000, 1000, 500, 500, 1000, 1000, 500, 500, 1000, 1000, 500, 500,
-                                              0, 0, 0, 0, 0, 0]), threshold=None, useRANSAC=True,
+                                              0, 0, 0, 0, 0, 0]), threshold=None, useRANSAC=True, max_trials=25,
                      bounds=np.array([[0, 3000], [0, 3000], [0, 2000], [0, 2000],
                                       [-10, 10], [-10, 10], [-10, 10],
                                       [-10, 10], [-10, 10], [-10, 10]])):
@@ -213,7 +214,7 @@ def DLS_all_pose_est(points12, points2d, P1, P2,
         reg = RANSACRegressor(base_estimator=TriangleReprojRegressor(P1, P2, initial_params, bounds, verbose=1, method='lm'),
                               min_samples=max(np.ceil(len(points2d) * 0.01), 20),
                               loss=euclidean_err, residual_threshold=threshold,
-                              is_model_valid=ReprojRegressor.is_model_valid, random_state=0, max_trials=100)
+                              is_model_valid=ReprojRegressor.is_model_valid, random_state=0, max_trials=max_trials)
         reg = reg.fit(points12, points2d)
         # if not reg.estimator_.success:
         #     reg.estimator_ = reg.estimator_.fit(points3d[reg.inlier_mask_], points2d[reg.inlier_mask_], nfev=50000)

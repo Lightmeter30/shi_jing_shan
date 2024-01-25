@@ -173,7 +173,7 @@ def image_transform(image: numpy):
         return image
     # rotate the src image 90 degrees clockwise
     rotated_image = cv2.transpose(image)
-    rotated_image = cv2.flip(rotated_image, 1)
+    # rotated_image = cv2.flip(rotated_image, 1)
     return rotated_image
 
 @csrf_exempt
@@ -273,7 +273,8 @@ def request_NVLAD_redir(request):
         feature_extractor = cv2.BRISK_create()
         # feature_extractor = cv2.ORB_create()
         # feature_extractor = cv2.xfeatures2d.SIFT_create()
-        feature_match = cv2.BFMatcher(crossCheck=True)
+        feature_match = cv2.BFMatcher(crossCheck=False)
+        ratio = 0.9
         distCoeffs = None
         useFilter = True
         filter_num = 200
@@ -328,12 +329,16 @@ def request_NVLAD_redir(request):
 
             keypoints1, descriptions1 = feature_extractor.detectAndCompute(image1_gray, None)
             keypoints3, descriptions3 = feature_extractor.detectAndCompute(image3_gray, None)
-            matches13 = feature_match.match(descriptions1, descriptions3)
-            if useFilter:
-                m13, num13 = getInliners(keypoints1, keypoints3, matches13, K1, K3, **filter_params)
+            matches13 = feature_match.knnMatch(descriptions1, descriptions3, k=2)
+            good_matches13 = []
+            for m, n in matches13:
+                if m.distance < ratio * n.distance:
+                    good_matches13.append(m)
+            if useFilter and len(good_matches13) > filter_num:
+                m13, num13 = getInliners(keypoints1, keypoints3, good_matches13, K1, K3, **filter_params)
                 if num13 > filter_num:
-                    matches13 = m13
-            good_matches13 = sorted(matches13, key=lambda x: x.distance)[:5000]
+                    good_matches13 = m13
+            good_matches13 = sorted(good_matches13, key=lambda x: x.distance)[:5000]
             tracks13 = {}
             for m in good_matches13:
                 if m.queryIdx not in tracks13:
@@ -357,23 +362,29 @@ def request_NVLAD_redir(request):
                 K2 = K1
                 P2 = read_pose_3dscanner(v[i][2]) if os.path.exists(v[i][2]) else np.eye(3, 4)
                 keypoints2, descriptions2 = feature_extractor.detectAndCompute(image2_gray, None)
-                matches12 = feature_match.match(descriptions1, descriptions2)
-                # matches21 = feature_match.match(descriptions2, descriptions1)
-                print(f'matches 12:{len(matches12)}')
-                # print(f'matches 21:{len(matches21)}')
-                if useFilter:
-                    m12, num12 = getInliners(keypoints1, keypoints2, matches12, K1, K2, **filter_params)
+                matches12 = feature_match.knnMatch(descriptions1, descriptions2, k=2)
+                good_matches12 = []
+                for m, n in matches12:
+                    if m.distance < ratio * n.distance:
+                        good_matches12.append(m)
+                if useFilter and len(good_matches12) > filter_num:
+                    m12, num12 = getInliners(keypoints1, keypoints2, good_matches12, K1, K2, **filter_params)
                     if num12 > filter_num:
-                        matches12 = m12
-                good_matches12 = sorted(matches12, key=lambda x: x.distance)[:5000]
+                        good_matches12 = m12
+                good_matches12 = sorted(good_matches12, key=lambda x: x.distance)[:5000]
                 tracks12 = {}
                 for m in good_matches12:
                     if m.queryIdx not in tracks12:
                         tracks12[m.queryIdx] = m.trainIdx
                 tracks1 = list(set(tracks12.keys()) & set(tracks13.keys()))
                 if tracks1 is None or len(tracks1) < 3:
-                    print("pose est failed!")
-                    pose = None
+                    end = time.time()
+                    print(f'pnp time cost:{end - start}')
+                    print(f'total time cost:{end - start_init}')
+                    if end - start_init > 30 or i == len(v) - 1:
+                        positions[qimname] = P1.tolist()
+                        pose = P1
+                        break
                     continue
                 points1 = np.float32([keypoints1[i].pt for i in tracks1]).reshape(-1, 1, 2)
                 points2 = np.float32([keypoints2[tracks12[i]].pt for i in tracks1]).reshape(-1, 1, 2)
@@ -388,7 +399,7 @@ def request_NVLAD_redir(request):
 
                 if points3d.shape[0] >= 12:
                     success, R, T, inliners = cv2.solvePnPRansac(points3d, points3, K3, distCoeffs)
-                    if inliners is not None:
+                    if True and inliners is not None:
                         inliners = inliners.squeeze()
                         print(f'inliner num:{inliners.shape}')
                         # if len(inliners) < 12:
@@ -406,8 +417,9 @@ def request_NVLAD_redir(request):
                             else:
                                 useDLS = True
                                 useRANSAC = True
-                        elif len(inliners) < max(50, len(points3)/2):
+                        elif len(inliners) < max(50, len(points3)/2) and success:
                             useDLS = True
+
 
 
                         if useDLS:
@@ -421,8 +433,8 @@ def request_NVLAD_redir(request):
                             print(f'new K3:{K3new}')
                             if success0:
                                 success, R, T = success0, R0, T0
-                # elif points3.shape[0] >= 6:
-                #     success, R, T = cv2.solvePnP(points3d, points3, K3, distCoeffs)
+                    else:
+                        success, R, T = cv2.solvePnP(points3d, points3, K3, distCoeffs)
                 else:
                     success = False
 
