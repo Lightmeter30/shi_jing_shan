@@ -17,6 +17,7 @@ import os
 BASE_DIR = Path(__file__).resolve().parent.parent
 COLMAP_PATH = 'colmap'
 NetVLAD_PATH = '/home/vr717/Documents/zlk/Patch-NetVLAD'
+os.environ['MKL_THREADING_LAYER'] = 'GNU'
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/3.2/howto/deployment/checklist/
