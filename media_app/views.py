@@ -18,6 +18,7 @@ import numpy as np
 import cv2, numpy
 import time
 
+
 def upload_video(request):
     if request.method == 'POST':
         custom_location = request.GET.get('custom_location', 'videos/')
@@ -167,6 +168,7 @@ def request_NVLAD(request):
     else:
         return JsonResponse({'error': 'NO such folder'}, status=404)
 
+
 def image_transform(image: numpy):
     (height, width) = image.shape[:2]
     if height >= width:
@@ -176,6 +178,7 @@ def image_transform(image: numpy):
     # rotated_image = cv2.flip(rotated_image, 1)
     return rotated_image
 
+
 @csrf_exempt
 def request_NVLAD_redir(request):
     start_init = time.time()
@@ -183,8 +186,10 @@ def request_NVLAD_redir(request):
     img_loc = os.path.join(img_loc, 'color')
     src_loc = os.path.join(settings.MEDIA_ROOT, 'images/', img_loc)
     dataset_loc = img_loc.split('/')[0]
-    intri_loc = os.path.join(settings.MEDIA_ROOT, 'images/', request.GET.get('camera_intri_location', os.path.join(dataset_loc, 'intrinsic')))
-    exter_loc = os.path.join(settings.MEDIA_ROOT, 'images/', request.GET.get('camera_exter_location', os.path.join(dataset_loc, 'pose')))
+    intri_loc = os.path.join(settings.MEDIA_ROOT, 'images/',
+                             request.GET.get('camera_intri_location', os.path.join(dataset_loc, 'intrinsic')))
+    exter_loc = os.path.join(settings.MEDIA_ROOT, 'images/',
+                             request.GET.get('camera_exter_location', os.path.join(dataset_loc, 'pose')))
     req_loc = os.path.join(settings.MEDIA_ROOT, 'nvlabs/', request.GET.get('request_location', img_loc))
     if req_loc[-1] != '/':
         req_loc = req_loc + '/'
@@ -228,13 +233,14 @@ def request_NVLAD_redir(request):
         with open(tempquery, 'w') as qtxt:
             for i, image in enumerate(images):
                 image_name, _ = os.path.splitext(image.name)
-                image_name = image_name+'.jpg'
+                image_name = image_name + '.jpg'
                 if camera_matrix is not None and i < len(camera_matrix):
                     qintrinsic[image_name] = np.array(camera_matrix[i])
                 # qintrinsic[image.name] = np.array(camera_matrix[i]) if camera_matrix and i < len(camera_matrix) else K
                 fs = FileSystemStorage(location=storage_path)
                 saved_image = fs.save(image_name, image)
-                saved_images.append(save_to_jpg(os.path.join(storage_path, saved_image), os.path.join(storage_path, image_name)))
+                saved_images.append(
+                    save_to_jpg(os.path.join(storage_path, saved_image), os.path.join(storage_path, image_name)))
                 qtxt.write(image_name + '\n')
 
         # command_conda = "source /home/vr717/anaconda3/etc/profile.d/conda.sh && conda activate patchnetvlad "
@@ -264,230 +270,293 @@ def request_NVLAD_redir(request):
                     _, qimname = os.path.split(ims[0])
                     _, simname = os.path.split(ims[1])
                     if qimname not in pred_imgs.keys():
-                        pred_imgs[qimname] = [(ims[1], os.path.join(intri_loc, simname.split('.')[0]+'.intrinsic_color.txt'),
-                                               os.path.join(exter_loc, simname.split('.')[0]+'.pose.txt'))]
+                        pred_imgs[qimname] = [
+                            (ims[1], os.path.join(intri_loc, simname.split('.')[0] + '.intrinsic_color.txt'),
+                             os.path.join(exter_loc, simname.split('.')[0] + '.pose.txt'))]
                     else:
-                        pred_imgs[qimname].append((ims[1], os.path.join(intri_loc, simname.split('.')[0]+'.intrinsic_color.txt'),
-                                               os.path.join(exter_loc, simname.split('.')[0]+'.pose.txt')))
+                        pred_imgs[qimname].append(
+                            (ims[1], os.path.join(intri_loc, simname.split('.')[0] + '.intrinsic_color.txt'),
+                             os.path.join(exter_loc, simname.split('.')[0] + '.pose.txt')))
 
         feature_extractor = cv2.BRISK_create()
         # feature_extractor = cv2.ORB_create()
         # feature_extractor = cv2.xfeatures2d.SIFT_create()
-        feature_match = cv2.BFMatcher(crossCheck=False)
-        ratio = 0.9
+        feature_match = cv2.BFMatcher(crossCheck=True)
         distCoeffs = None
         useFilter = True
         filter_num = 200
-        filter_params = {'distCoeffs1': None, 'distCoeffs2': None, 'threshold': 8., 'prob':0.99, 'no_intrinsic':True}
+        filter_params = {'distCoeffs1': None, 'distCoeffs2': None, 'threshold': 8., 'prob': 0.99, 'no_intrinsic': True}
         drawMatch = True
+        timeout = 30
         W = 480
         H = 640
-        est_focal = np.sqrt(W**2+H**2) * 1428.643433 / 1440
-        # est_focal = max(W,H) * 1428.643433 / 1440
-        est_K = np.array([[est_focal, 0, W/2.], [0, est_focal, H/2.], [0, 0, 1]])
+        est_focal = np.sqrt(W ** 2 + H ** 2) * 1428.643433 / 1440
+        est_K = np.array([[est_focal, 0, W / 2.], [0, est_focal, H / 2.], [0, 0, 1]])
         for qimname, v in pred_imgs.items():
             qim = os.path.join(tempimages, qimname)
-            sim1 = v[0][0]
-
-            image1 = cv2.imread(sim1)
-            image1 = image_transform(image1)
-            factor1 = [float(W) / image1.shape[1], float(H) / image1.shape[0]]
-            image1 = cv2.resize(image1, (W, H))
-            image1_gray = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
             image3 = cv2.imread(qim)
             print("image3 src shape is :", image3.shape)
             image3 = image_transform(image3)
-            est_focal3 = np.linalg.norm(image3.shape[:2]) * 1428.643433 / 1440
-            est_K3 = np.array([[est_focal3, 0, image3.shape[1]/2], [0, est_focal3, image3.shape[0] / 2.], [0, 0, 1]])
-            factor3 = [float(W) / image3.shape[1], float(H) / image3.shape[0]]
             image3 = cv2.resize(image3, (W, H))
             image3_gray = cv2.cvtColor(image3, cv2.COLOR_BGR2GRAY)
-            K1 = read_camera_matrix_3dscanner(v[0][1]) if os.path.exists(v[0][1]) else K
-            K1[0,:] *= factor1[0]
-            K1[1,:] *= factor1[1]
-            K1 = est_K
-            if qimname in qintrinsic:
-                K3 = qintrinsic[qimname]
-                K3[0, :] *= factor3[0]
-                K3[1, :] *= factor3[1]
-            else:
-                # assume camera focal = diag_len/diag(24,36) * diag(H, W), original point in centre H/2, W/2
-                tmp_focal = image3.shape[1] * 1428.643433/1440
-                # tmp_focal = 500
-                K3 = np.array([[est_K3[0,0]*factor3[0], 0.000000, est_K3[0,2]*factor3[0]],
-                      [0.000000, est_K3[1,1]*factor3[1], est_K3[1,2]*factor3[1]],
-                      [0.000000, 0.000000, 1.000000]])
-            K3 = K1
-            print(f'image1 intrinsic:{K1}')
+            K3 = est_K
             print(f'image3 intrinsic:{K3}')
-            print(f'image1 shape:{image1.shape}')
             print(f'image3 shape:{image3.shape}')
-            P1 = read_pose_3dscanner(v[0][2]) if os.path.exists(v[0][2]) else np.eye(3, 4)
-            print(f'image1 pose:{P1}')
+
+            best_inliners = np.array([])
+            best_inliners_rate = 0
+            min_residuals_norm = np.inf
+            stop_residuals_norm = 0.1
+            best_inliners_rate_window = 0.1
+            best_image_name = None
+            best_image_RGB = None
+            best_keypoints = None
+            best_description = None
+            best_tracks = None
+            best_match = None
+            best_points2d = None
+            best_points3d = np.array([])
+            best_P = None
+            best_K = None
+            default_P = read_pose_3dscanner(v[0][2]) if os.path.exists(v[0][2]) else np.eye(3, 4)
             ground_truth = os.path.join(exter_loc, qimname.split('.')[0] + '.pose.txt')
-            P3 = read_pose_3dscanner(ground_truth) if os.path.exists(ground_truth) else P1
+            ground_P3 = read_pose_3dscanner(ground_truth) if os.path.exists(ground_truth) else default_P
+            ground_truth = ''
+            is_stop = False
+            stop_inliner_rate = 0.97
+            use_DST_inliner_rate = 0.5
+            min_traverse_windows = 3
+            init_traverse_windows = 30
+            add_traverse_windows = 1.2
 
-            keypoints1, descriptions1 = feature_extractor.detectAndCompute(image1_gray, None)
-            keypoints3, descriptions3 = feature_extractor.detectAndCompute(image3_gray, None)
-            matches13 = feature_match.knnMatch(descriptions1, descriptions3, k=2)
-            good_matches13 = []
-            for m, n in matches13:
-                if m.distance < ratio * n.distance:
-                    good_matches13.append(m)
-            if useFilter and len(good_matches13) > filter_num:
-                m13, num13 = getInliners(keypoints1, keypoints3, good_matches13, K1, K3, **filter_params)
-                if num13 > filter_num:
-                    good_matches13 = m13
-            good_matches13 = sorted(good_matches13, key=lambda x: x.distance)[:5000]
-            tracks13 = {}
-            for m in good_matches13:
-                if m.queryIdx not in tracks13:
-                    tracks13[m.queryIdx] = m.trainIdx
+            for i in range(0, len(v) - 1):
+                success = False
+                pose = None
+                traverse_windows = init_traverse_windows
+                meet_best = False
 
-            print(qim)
-            print(v[0])
-            print(f"matches13 num:{len(tracks13)}")
+                sim1 = v[i][0]
+                image1 = cv2.imread(sim1)
+                image1 = image_transform(image1)
+                image1 = cv2.resize(image1, (W, H))
+                image1_gray = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
+                K1 = est_K
+                print(f'image1 intrinsic:{K1}')
+                print(f'image1 shape:{image1.shape}')
+                P1 = read_pose_3dscanner(v[i][2]) if os.path.exists(v[i][2]) else np.eye(3, 4)
+                print(f'image1 pose:{P1}')
 
-            for i in range(1, len(v)):
-                sim2 = v[i][0]
+                keypoints1, descriptions1 = feature_extractor.detectAndCompute(image1_gray, None)
+                keypoints3, descriptions3 = feature_extractor.detectAndCompute(image3_gray, None)
+                matches13 = feature_match.match(descriptions1, descriptions3)
+                if useFilter:
+                    m13, num13 = getInliners(keypoints1, keypoints3, matches13, K1, K3, **filter_params)
+                    if num13 > filter_num:
+                        matches13 = m13
+                good_matches13 = sorted(matches13, key=lambda x: x.distance)[:5000]
+                tracks13 = {}
+                for m in good_matches13:
+                    if m.queryIdx not in tracks13:
+                        tracks13[m.queryIdx] = m.trainIdx
 
-                image2 = cv2.imread(sim2)
-                image2 = image_transform(image2)
-                factor2 = [float(W) / image2.shape[1], float(H) / image2.shape[0]]
-                image2 = cv2.resize(image2, (W, H))
-                image2_gray = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
-                K2 = read_camera_matrix_3dscanner(v[i][1]) if os.path.exists(v[i][1]) else K
-                K2[0, :] *= factor2[0]
-                K2[1, :] *= factor2[1]
-                K2 = K1
-                P2 = read_pose_3dscanner(v[i][2]) if os.path.exists(v[i][2]) else np.eye(3, 4)
-                keypoints2, descriptions2 = feature_extractor.detectAndCompute(image2_gray, None)
-                matches12 = feature_match.knnMatch(descriptions1, descriptions2, k=2)
-                good_matches12 = []
-                for m, n in matches12:
-                    if m.distance < ratio * n.distance:
-                        good_matches12.append(m)
-                if useFilter and len(good_matches12) > filter_num:
-                    m12, num12 = getInliners(keypoints1, keypoints2, good_matches12, K1, K2, **filter_params)
-                    if num12 > filter_num:
-                        good_matches12 = m12
-                good_matches12 = sorted(good_matches12, key=lambda x: x.distance)[:5000]
-                tracks12 = {}
-                for m in good_matches12:
-                    if m.queryIdx not in tracks12:
-                        tracks12[m.queryIdx] = m.trainIdx
-                tracks1 = list(set(tracks12.keys()) & set(tracks13.keys()))
-                if tracks1 is None or len(tracks1) < 3:
-                    end = time.time()
-                    print(f'pnp time cost:{end - start}')
-                    print(f'total time cost:{end - start_init}')
-                    if end - start_init > 30 or i == len(v) - 1:
-                        positions[qimname] = P1.tolist()
-                        pose = P1
-                        break
-                    continue
-                points1 = np.float32([keypoints1[i].pt for i in tracks1]).reshape(-1, 1, 2)
-                points2 = np.float32([keypoints2[tracks12[i]].pt for i in tracks1]).reshape(-1, 1, 2)
-                points3 = np.float32([keypoints3[tracks13[i]].pt for i in tracks1]).reshape(-1, 1, 2)
-                points3d = cv2.triangulatePoints(K1 @ P1, K2 @ P2, points1, points2)
-                points3d = cv2.convertPointsFromHomogeneous(points3d.T).squeeze()
+                print(f"matches13 num:{len(tracks13)}")
 
-                print(v[i])
-                print(f"matches12 num:{len(tracks12)}")
-                print(f"matches123 num:{len(tracks1)}")
-                print(f"3d points num:{points3d.shape[0]}")
-
-                if points3d.shape[0] >= 12:
-                    success, R, T, inliners = cv2.solvePnPRansac(points3d, points3, K3, distCoeffs)
-                    if True and inliners is not None:
-                        inliners = inliners.squeeze()
-                        print(f'inliner num:{inliners.shape}')
-                        # if len(inliners) < 12:
-                        #     success = False
-
-                        useRANSAC = False
-                        useDLS = False
-                        if len(inliners) < 12 and success:
-                            inliners = np.arange(len(points3))
-                            if len(inliners) < 30:
-                                success, R, T = cv2.solvePnP(points3d, points3, K3, distCoeffs)
-                            elif len(inliners) < 50:
-                                useDLS = True
-                                useRANSAC = False
-                            else:
-                                useDLS = True
-                                useRANSAC = True
-                        elif len(inliners) < max(50, len(points3)/2) and success:
-                            useDLS = True
-
-
-
-                        if useDLS:
-                            rot_vec1, _ = cv2.Rodrigues(P1[:3, :3])
-                            rot_vec1 = rot_vec1.flatten()
-                            shift1 = P1[:3, 3]
-                            intrinsic3 = np.array([K3[0, 0], K3[1, 1], K3[0, 2], K3[1, 2]])
-                            init_params = np.hstack((intrinsic3, rot_vec1, shift1))
-                            print(f'init_params:{init_params}')
-                            success0, R0, T0, K3new, _ = DLS_pose_est(points3d[inliners], points3[inliners].squeeze(), init_params, useRANSAC=useRANSAC)
-                            print(f'new K3:{K3new}')
-                            if success0:
-                                success, R, T = success0, R0, T0
-                    else:
-                        success, R, T = cv2.solvePnP(points3d, points3, K3, distCoeffs)
-                else:
+                for j in range(i + 1, len(v)):
                     success = False
-
-                if drawMatch and success:
-                    dmatch13 = [cv2.DMatch(i, tracks13[i], 0) for i in tracks1]
-                    dmatch23 = [cv2.DMatch(tracks12[i], tracks13[i], 0) for i in tracks1]
-                    img_with_key13 = cv2.drawMatches(image1, keypoints1, image3, keypoints3, dmatch13, None)
-                    img_with_key23 = cv2.drawMatches(image2, keypoints2, image3, keypoints3, dmatch23, None)
-                    img_with_key13_all = cv2.drawMatches(image1, keypoints1, image3, keypoints3, good_matches13, None)
-                    img_with_key12_all = cv2.drawMatches(image1, keypoints1, image2, keypoints2, good_matches12, None)
-                    compression_params = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
-                    cv2.imwrite(os.path.join(resfolder,
-                                             'match_' + os.path.basename(sim1).split('.')[0] + qimname), img_with_key13,
-                                compression_params)
-                    cv2.imwrite(os.path.join(resfolder,
-                                             'match_' + os.path.basename(sim2).split('.')[0] + qimname), img_with_key23,
-                                compression_params)
-                    cv2.imwrite(os.path.join(resfolder,
-                                             'match_all_' + os.path.basename(sim1).split('.')[0] + qimname), img_with_key13_all,
-                                compression_params)
-                    cv2.imwrite(os.path.join(resfolder,
-                                             'match_all_' + os.path.basename(sim1).split('.')[0] + os.path.basename(sim2)), img_with_key12_all,
-                                compression_params)
-
-                if success:
-                    R, _ = cv2.Rodrigues(R)
-                    pose = np.hstack((R, T))
-                else:
-                    print("pose est failed!")
                     pose = None
+                    if j - i > max(traverse_windows, min_traverse_windows):
+                        print('excced windows')
+                        break
+
+                    sim2 = v[j][0]
+                    image2 = cv2.imread(sim2)
+                    image2 = image_transform(image2)
+                    image2 = cv2.resize(image2, (W, H))
+                    image2_gray = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
+                    K2 = est_K
+                    P2 = read_pose_3dscanner(v[j][2]) if os.path.exists(v[j][2]) else np.eye(3, 4)
+                    keypoints2, descriptions2 = feature_extractor.detectAndCompute(image2_gray, None)
+                    matches12 = feature_match.match(descriptions1, descriptions2)
+                    print(f'matches 12:{len(matches12)}')
+                    if useFilter:
+                        m12, num12 = getInliners(keypoints1, keypoints2, matches12, K1, K2, **filter_params)
+                        if num12 > filter_num:
+                            matches12 = m12
+                    good_matches12 = sorted(matches12, key=lambda x: x.distance)[:5000]
+                    tracks12 = {}
+                    for m in good_matches12:
+                        if m.queryIdx not in tracks12:
+                            tracks12[m.queryIdx] = m.trainIdx
+                    tracks1 = list(set(tracks12.keys()) & set(tracks13.keys()))
+                    if tracks1 is None or len(tracks1) < 10:
+                        print("common points too low, pose est failed!")
+                        end = time.time()
+                        if end - start_init > timeout:
+                            print("time out 3")
+                            break
+                        continue
+                    points1 = np.float32([keypoints1[i].pt for i in tracks1]).reshape(-1, 1, 2)
+                    points2 = np.float32([keypoints2[tracks12[i]].pt for i in tracks1]).reshape(-1, 1, 2)
+                    points3 = np.float32([keypoints3[tracks13[i]].pt for i in tracks1]).reshape(-1, 1, 2)
+                    points3d = cv2.triangulatePoints(K1 @ P1, K2 @ P2, points1, points2)
+                    points3d = cv2.convertPointsFromHomogeneous(points3d.T).squeeze()
+
+                    print(qimname)
+                    print(v[i][0])
+                    print(v[j][0])
+                    print(f"matches12 num:{len(tracks12)}")
+                    print(f"matches123 num:{len(tracks1)}")
+                    print(f"3d points num:{points3d.shape[0]}")
+
+                    if points3d.shape[0] >= 100:
+                        rot_vec1, _ = cv2.Rodrigues(P1[:3, :3])
+                        shift1 = P1[:3, 3:]
+                        success, R, T, inliners = cv2.solvePnPRansac(points3d, points3, K3, distCoeffs,
+                                                                     useExtrinsicGuess=False, rvec=rot_vec1,
+                                                                     tvec=shift1)
+                        if success and inliners is not None:
+                            inliners = inliners.squeeze()
+                            print(f'inliner num:{inliners.shape}')
+                            Rtmp, _ = cv2.Rodrigues(R)
+                            pose = np.hstack((Rtmp, T))
+                            residuals = ground_P3 - pose
+                            if len(inliners) >= 200 and (
+                                    len(inliners) > (best_inliners_rate + best_inliners_rate_window) * len(points3) \
+                                    or (best_inliners_rate - best_inliners_rate_window) * len(points3) < len(inliners) \
+                                    and len(best_inliners) < len(inliners)) \
+                                    or len(best_inliners) < len(inliners) < 200 \
+                                    or os.path.exists(ground_truth) and np.linalg.norm(residuals) < min_residuals_norm:
+                                print('found best')
+                                best_inliners = inliners
+                                best_inliners_rate = float(len(inliners)) / float(len(points3))
+                                best_points2d = [points1, points2, points3]
+                                best_points3d = points3d
+                                best_K = [K1, K2, K3]
+                                Rtmp, _ = cv2.Rodrigues(R)
+                                pose = np.hstack((Rtmp, T))
+                                best_P = [P1, P2, pose]
+                                best_image_name = [sim1, sim2]
+                                best_description = [descriptions1, descriptions2, descriptions3]
+                                best_keypoints = [keypoints1, keypoints2, keypoints3]
+                                best_tracks = [tracks1, tracks12, tracks13]
+                                best_image_RGB = [image1, image2, image3]
+                                best_match = [good_matches12, good_matches13]
+
+                                is_stop = best_inliners_rate > stop_inliner_rate
+                                meet_best = True
+                                traverse_windows = init_traverse_windows if best_inliners_rate >= 0.2 else 0.8 * traverse_windows
+                                if os.path.exists(ground_truth) and np.linalg.norm(residuals) < min_residuals_norm:
+                                    min_residuals_norm = np.linalg.norm(residuals)
+                                    is_stop = min_residuals_norm < stop_residuals_norm
+                            elif len(inliners) < 0.2 * len(points3):
+                                print('too less inliners')
+                                traverse_windows *= 0.95 if meet_best or j - i < min_traverse_windows else 0.5
+                            else:
+                                traverse_windows *= 0.97 if meet_best or j - i < min_traverse_windows else 0.8
+                        else:
+                            traverse_windows *= 0.95 if meet_best or j - i < min_traverse_windows else 0.5
+                    else:
+                        traverse_windows *= 0.95 if meet_best or j - i < min_traverse_windows else 0.5
+                        success = False
+
+                    if is_stop:
+                        print('stop reached')
+                        break
+                    else:
+                        if not success:
+                            print("pose est failed!")
+                        end = time.time()
+                        if end - start_init > timeout:
+                            print("time out 1")
+                            break
 
                 end = time.time()
-                print(f'pnp time cost:{end-start}')
-                print(f'total time cost:{end-start_init}')
-                if pose is not None:
-                    positions[qimname] = pose.tolist()
+                if is_stop or i == len(v) - 2 or end - start_init > timeout:
+                    if end - start_init > timeout:
+                        print("time out 2")
+                        print('best_ratio failed')
+                    if best_P is not None:
+                        print(f'best inliner num:{len(best_inliners)}')
+                        print(f'points3d num:{len(best_points3d)}')
+                        useRANSAC = False
+                        tmp_inliners = best_inliners if len(best_inliners) > 20 else np.arange(len(best_points3d))
+                        if 20 <= len(best_inliners) < max(50, len(best_points3d) * use_DST_inliner_rate):
+                            init_params = DLS_pose_est_init_params(best_P[0], best_K[2])
+                            print(f'init_params:{init_params}')
+                            success0, R0, T0, K3new, _ = DLS_pose_est(best_points3d[tmp_inliners],
+                                                                      best_points2d[2][tmp_inliners].squeeze(),
+                                                                      init_params,
+                                                                      useRANSAC=useRANSAC)
+                            print(f'new K3:{K3new}')
+                            print(f'DLS pose est success:{success0}')
+                            if success0:
+                                Rtmp, _ = cv2.Rodrigues(R0)
+                                pose = np.hstack((Rtmp, T0))
+                                best_P[2] = pose
+                        elif len(best_inliners) <= 12:
+                            rot_vec1, _ = cv2.Rodrigues(best_P[0][:3, :3])
+                            shift1 = best_P[0][:3, 3:]
+                            success0, R0, T0 = cv2.solvePnP(best_points3d, best_points2d[2].squeeze(), K3, distCoeffs,
+                                                            useExtrinsicGuess=True, rvec=rot_vec1, tvec=shift1)
+                            if success0:
+                                Rtmp, _ = cv2.Rodrigues(R0)
+                                pose = np.hstack((Rtmp, T0))
+                                best_P[2] = pose
+                        positions[qimname] = best_P[2].tolist()
+                        if drawMatch:
+                            dmatch13 = [cv2.DMatch(i, best_tracks[2][i], 0) for i in best_tracks[0]]
+                            dmatch23 = [cv2.DMatch(best_tracks[1][i], best_tracks[2][i], 0) for i in best_tracks[0]]
+                            img_with_key13 = cv2.drawMatches(best_image_RGB[0], best_keypoints[0], best_image_RGB[2],
+                                                             best_keypoints[2], dmatch13, None)
+                            img_with_key23 = cv2.drawMatches(best_image_RGB[1], best_keypoints[1], best_image_RGB[2],
+                                                             best_keypoints[2], dmatch23, None)
+                            img_with_key13_all = cv2.drawMatches(best_image_RGB[0], best_keypoints[0],
+                                                                 best_image_RGB[2], best_keypoints[2], best_match[1],
+                                                                 None)
+                            img_with_key12_all = cv2.drawMatches(best_image_RGB[0], best_keypoints[0],
+                                                                 best_image_RGB[1], best_keypoints[1], best_match[0],
+                                                                 None)
+                            compression_params = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
+                            cv2.imwrite(os.path.join(resfolder,
+                                                     'match_' + os.path.basename(best_image_name[0]).split('.')[
+                                                         0] + qimname), img_with_key13,
+                                        compression_params)
+                            cv2.imwrite(os.path.join(resfolder,
+                                                     'match_' + os.path.basename(best_image_name[1]).split('.')[
+                                                         0] + qimname), img_with_key23,
+                                        compression_params)
+                            cv2.imwrite(os.path.join(resfolder,
+                                                     'match_all_' + os.path.basename(best_image_name[0]).split('.')[
+                                                         0] + qimname), img_with_key13_all,
+                                        compression_params)
+                            cv2.imwrite(os.path.join(resfolder,
+                                                     'match_all_' + os.path.basename(best_image_name[0]).split('.')[
+                                                         0] + os.path.basename(best_image_name[1])), img_with_key12_all,
+                                        compression_params)
+                    else:
+                        positions[qimname] = default_P.tolist()
+                        print("all pose est failed")
                     break
-                elif end-start_init > 30 or i == len(v)-1:
-                    positions[qimname] = P1.tolist()
-                    pose = P1
-                    break
-            if P3 is not None and pose is not None:
-                R3 = P3[:3, :3]
-                R3_qim = pose[:3, :3]
-                residuals = P3 - pose
+
+            end = time.time()
+            print(f'pnp time cost:{end - start}')
+            print(f'total time cost:{end - start_init}')
+
+            if ground_P3 is not None and best_P is not None:
+                print(best_image_name)
+                R3 = ground_P3[:3, :3]
+                R3_qim = best_P[2][:3, :3]
+                residuals = ground_P3 - best_P[2]
                 rot_vec_p3, _ = cv2.Rodrigues(R3)
                 rot_vec_qim, _ = cv2.Rodrigues(R3_qim)
-                print(f'Loss shift:{np.linalg.norm(residuals[:,3])}')
-                print(f'Loss rot:{np.linalg.norm(residuals[:,:3])}')
-                print(f'Loss rot radius:{(np.linalg.norm(rot_vec_p3) - np.linalg.norm(rot_vec_qim)) * 180. / np.pi}')
-                print(f'Loss rot vec dir:{np.linalg.norm(rot_vec_p3/np.linalg.norm(rot_vec_p3) - rot_vec_qim/np.linalg.norm(rot_vec_qim))}')
+                print(f'Loss shift:{np.linalg.norm(residuals[:, 3])}')
+                print(f'Loss rot:{np.linalg.norm(residuals[:, :3])}')
+                print(
+                    f'Loss rot radius:{(np.linalg.norm(rot_vec_p3) - np.linalg.norm(rot_vec_qim)) * 180. / np.pi}')
+                print(
+                    f'Loss rot vec dir:{np.linalg.norm(rot_vec_p3 / np.linalg.norm(rot_vec_p3) - rot_vec_qim / np.linalg.norm(rot_vec_qim))}')
 
-        return JsonResponse({'message': 'Folder Found', 'saved_path': saved_images, 'positions':positions} , status=200)
+        return JsonResponse({'message': 'Folder Found', 'saved_path': saved_images, 'positions': positions}, status=200)
 
     else:
         return JsonResponse({'error': 'POST request required'}, status=400)

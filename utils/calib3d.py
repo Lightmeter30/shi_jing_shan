@@ -178,6 +178,14 @@ def DLS_pose_est(points3d, points2d, initial_params=np.array([1000, 1000, 500, 5
         K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
         return result.success and fx > 0 and fy > 0 and cx > 0 and cy > 0, R, T, K, None
 
+def DLS_pose_est_init_params(P1, K3):
+    rot_vec1, _ = cv2.Rodrigues(P1[:3, :3])
+    rot_vec1 = rot_vec1.flatten()
+    shift1 = P1[:3, 3]
+    intrinsic3 = np.array([K3[0, 0], K3[1, 1], K3[0, 2], K3[1, 2]])
+    init_params = np.hstack((intrinsic3, rot_vec1, shift1))
+    return init_params
+
 class TriangleReprojRegressor(ReprojRegressor):
     def __init__(self, P1, P2, initial_params=np.array([1000, 1000, 500, 500, 1000, 1000, 500, 500, 1000, 1000, 500, 500,
                                               0, 0, 0, 0, 0, 0]),
