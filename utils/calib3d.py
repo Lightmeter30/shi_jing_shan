@@ -18,8 +18,8 @@ def save_to_jpg(image, save_path):
     # image.close()
     # pngImage = Image.frombytes(imagedata)
     pngImage = Image.open(image)
-    pngImage = ImageOps.exif_transpose(pngImage)
-    pngImage.convert("RGB").save(save_path, "JPEG", quality=85)
+    # pngImage = ImageOps.exif_transpose(pngImage)
+    pngImage.convert("RGB").save(save_path, "JPEG", quality=100)
     return save_path
 
 

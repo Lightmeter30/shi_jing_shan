@@ -392,7 +392,7 @@ def request_NVLAD_redir(request):
                     for m in good_matches12:
                         if m.queryIdx not in tracks12:
                             tracks12[m.queryIdx] = m.trainIdx
-                    tracks1 = list(set(tracks12.keys()) & set(tracks13.keys()))
+                    tracks1 = np.array(list(set(tracks12.keys()) & set(tracks13.keys())))
                     if tracks1 is None or len(tracks1) < 10:
                         print("common points too low, pose est failed!")
                         end = time.time()
@@ -515,8 +515,8 @@ def request_NVLAD_redir(request):
 
                         positions[qimname] = best_P[2].tolist()
                         if drawMatch:
-                            dmatch13 = [cv2.DMatch(i, best_tracks[2][i], 0) for i in best_tracks[0]]
-                            dmatch23 = [cv2.DMatch(best_tracks[1][i], best_tracks[2][i], 0) for i in best_tracks[0]]
+                            dmatch13 = [cv2.DMatch(i, best_tracks[2][i], 0) for i in best_tracks[0][best_inliners]]
+                            dmatch23 = [cv2.DMatch(best_tracks[1][i], best_tracks[2][i], 0) for i in best_tracks[0][best_inliners]]
                             img_with_key13 = cv2.drawMatches(best_image_RGB[0], best_keypoints[0], best_image_RGB[2],
                                                              best_keypoints[2], dmatch13, None)
                             img_with_key23 = cv2.drawMatches(best_image_RGB[1], best_keypoints[1], best_image_RGB[2],
