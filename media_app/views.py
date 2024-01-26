@@ -289,7 +289,7 @@ def request_NVLAD_redir(request):
         filter_num = 200
         filter_params = {'distCoeffs1': None, 'distCoeffs2': None, 'threshold': 8., 'prob': 0.99, 'no_intrinsic': True}
         drawMatch = True
-        timeout = 40
+        timeout = 30
         W = 480
         H = 640
         est_focal = np.sqrt(W ** 2 + H ** 2) * 1428.643433 / 1440
@@ -328,7 +328,7 @@ def request_NVLAD_redir(request):
             is_stop = False
             stop_inliner_rate = 0.96
             use_DST_inliner_rate = 0.5
-            min_traverse_windows = 3
+            min_traverse_windows = 10
             init_traverse_windows = 30
             add_traverse_windows = 1.2
 
@@ -382,7 +382,7 @@ def request_NVLAD_redir(request):
                     P2 = read_pose_3dscanner(v[j][2]) if os.path.exists(v[j][2]) else np.eye(3, 4)
                     keypoints2, descriptions2 = feature_extractor.detectAndCompute(image2_gray, None)
                     matches12 = feature_match.match(descriptions1, descriptions2)
-                    print(f'matches 12:{len(matches12)}')
+                    # print(f'matches 12:{len(matches12)}')
                     if useFilter:
                         m12, num12 = getInliners(keypoints1, keypoints2, matches12, K1, K2, **filter_params)
                         if num12 > filter_num:
@@ -406,12 +406,12 @@ def request_NVLAD_redir(request):
                     points3d = cv2.triangulatePoints(K1 @ P1, K2 @ P2, points1, points2)
                     points3d = cv2.convertPointsFromHomogeneous(points3d.T).squeeze()
 
-                    print(qimname)
-                    print(v[i][0])
-                    print(v[j][0])
-                    print(f"matches12 num:{len(tracks12)}")
-                    print(f"matches123 num:{len(tracks1)}")
-                    print(f"3d points num:{points3d.shape[0]}")
+                    # print(qimname)
+                    # print(v[i][0])
+                    # print(v[j][0])
+                    # print(f"matches12 num:{len(tracks12)}")
+                    # print(f"matches123 num:{len(tracks1)}")
+                    # print(f"3d points num:{points3d.shape[0]}")
 
                     if points3d.shape[0] >= 100:
                         rot_vec1, _ = cv2.Rodrigues(P1[:3, :3])
@@ -421,15 +421,15 @@ def request_NVLAD_redir(request):
                                                                      tvec=shift1)
                         if success and inliners is not None:
                             inliners = inliners.squeeze()
-                            print(f'inliner num:{inliners.shape}')
+                            # print(f'inliner num:{inliners.shape}')
                             Rtmp, _ = cv2.Rodrigues(R)
                             pose = np.hstack((Rtmp, T))
                             residuals = ground_P3 - pose
-                            if len(inliners) >= 200 and (
+                            if len(inliners) >= 100 and (
                                     len(inliners) > (best_inliners_rate + best_inliners_rate_window) * len(points3) \
                                     or (best_inliners_rate - best_inliners_rate_window) * len(points3) < len(inliners) \
                                     and len(best_inliners) < len(inliners)) \
-                                    or len(best_inliners) < len(inliners) < 200 \
+                                    or len(best_inliners) < len(inliners) < 100 \
                                     or os.path.exists(ground_truth) and np.linalg.norm(residuals) < min_residuals_norm:
                                 print('found best')
                                 best_inliners = inliners
@@ -454,7 +454,7 @@ def request_NVLAD_redir(request):
                                     min_residuals_norm = np.linalg.norm(residuals)
                                     is_stop = min_residuals_norm < stop_residuals_norm
                             elif len(inliners) < 0.2 * len(points3):
-                                print('too less inliners')
+                                # print('too less inliners')
                                 traverse_windows *= 0.95 if meet_best or j - i < min_traverse_windows else 0.5
                             else:
                                 traverse_windows *= 0.97 if meet_best or j - i < min_traverse_windows else 0.8
@@ -509,6 +509,9 @@ def request_NVLAD_redir(request):
                                 best_P[2] = pose
                         elif False and len(best_inliners) <= 12 and len(best_points3d) <= 200:
                             best_P[2] = best_P[0]
+
+                        # if len(best_inliners) <= 50:
+                        #     best_P[2] = best_P[0]
 
                         positions[qimname] = best_P[2].tolist()
                         if drawMatch:
