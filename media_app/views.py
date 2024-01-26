@@ -150,6 +150,8 @@ def request_NVLAD(request):
     if req_loc[-1] != '/':
         req_loc = req_loc + '/'
     save_loc = os.path.join(settings.MEDIA_ROOT, 'nvlabs/', request.GET.get('save_location', req_loc))
+    if save_loc[-1] != '/':
+        save_loc = save_loc + '/'
     if not os.path.exists(save_loc):
         os.makedirs(save_loc)
         os.makedirs(os.path.join(save_loc, 'index_features/'))
@@ -287,7 +289,7 @@ def request_NVLAD_redir(request):
         filter_num = 200
         filter_params = {'distCoeffs1': None, 'distCoeffs2': None, 'threshold': 8., 'prob': 0.99, 'no_intrinsic': True}
         drawMatch = True
-        timeout = 30
+        timeout = 40
         W = 480
         H = 640
         est_focal = np.sqrt(W ** 2 + H ** 2) * 1428.643433 / 1440
@@ -299,6 +301,7 @@ def request_NVLAD_redir(request):
             image3 = image_transform(image3)
             image3 = cv2.resize(image3, (W, H))
             image3_gray = cv2.cvtColor(image3, cv2.COLOR_BGR2GRAY)
+            # image3_gray = image3
             K3 = est_K
             print(f'image3 intrinsic:{K3}')
             print(f'image3 shape:{image3.shape}')
@@ -323,7 +326,7 @@ def request_NVLAD_redir(request):
             ground_P3 = read_pose_3dscanner(ground_truth) if os.path.exists(ground_truth) else default_P
             ground_truth = ''
             is_stop = False
-            stop_inliner_rate = 0.97
+            stop_inliner_rate = 0.96
             use_DST_inliner_rate = 0.5
             min_traverse_windows = 3
             init_traverse_windows = 30
@@ -340,6 +343,7 @@ def request_NVLAD_redir(request):
                 image1 = image_transform(image1)
                 image1 = cv2.resize(image1, (W, H))
                 image1_gray = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
+                # image1_gray = image1
                 K1 = est_K
                 print(f'image1 intrinsic:{K1}')
                 print(f'image1 shape:{image1.shape}')
@@ -373,6 +377,7 @@ def request_NVLAD_redir(request):
                     image2 = image_transform(image2)
                     image2 = cv2.resize(image2, (W, H))
                     image2_gray = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
+                    # image2_gray = image2
                     K2 = est_K
                     P2 = read_pose_3dscanner(v[j][2]) if os.path.exists(v[j][2]) else np.eye(3, 4)
                     keypoints2, descriptions2 = feature_extractor.detectAndCompute(image2_gray, None)
@@ -480,7 +485,7 @@ def request_NVLAD_redir(request):
                         print(f'points3d num:{len(best_points3d)}')
                         useRANSAC = False
                         tmp_inliners = best_inliners if len(best_inliners) > 20 else np.arange(len(best_points3d))
-                        if 20 <= len(best_inliners) < max(50, len(best_points3d) * use_DST_inliner_rate):
+                        if 50 <= len(best_inliners) < max(50, len(best_points3d) * use_DST_inliner_rate):
                             init_params = DLS_pose_est_init_params(best_P[0], best_K[2])
                             print(f'init_params:{init_params}')
                             success0, R0, T0, K3new, _ = DLS_pose_est(best_points3d[tmp_inliners],
@@ -493,7 +498,7 @@ def request_NVLAD_redir(request):
                                 Rtmp, _ = cv2.Rodrigues(R0)
                                 pose = np.hstack((Rtmp, T0))
                                 best_P[2] = pose
-                        elif len(best_inliners) <= 12:
+                        elif False and len(best_inliners) <= 12 and len(best_points3d) > 200:
                             rot_vec1, _ = cv2.Rodrigues(best_P[0][:3, :3])
                             shift1 = best_P[0][:3, 3:]
                             success0, R0, T0 = cv2.solvePnP(best_points3d, best_points2d[2].squeeze(), K3, distCoeffs,
@@ -502,6 +507,9 @@ def request_NVLAD_redir(request):
                                 Rtmp, _ = cv2.Rodrigues(R0)
                                 pose = np.hstack((Rtmp, T0))
                                 best_P[2] = pose
+                        elif False and len(best_inliners) <= 12 and len(best_points3d) <= 200:
+                            best_P[2] = best_P[0]
+
                         positions[qimname] = best_P[2].tolist()
                         if drawMatch:
                             dmatch13 = [cv2.DMatch(i, best_tracks[2][i], 0) for i in best_tracks[0]]
