@@ -44,6 +44,15 @@ def read_pose_3dscanner(file_path):
     pose = np.array(pose, dtype=np.float32)
     return pose
 
+def image_transform(image: np):
+    (height, width) = image.shape[:2]
+    if height >= width:
+        return image
+    # rotate the src image 90 degrees clockwise
+    rotated_image = cv2.transpose(image)
+    # rotated_image = cv2.flip(rotated_image, 1)
+    return rotated_image
+
 
 def pixel2cam(points, K):
     camP = []
@@ -255,8 +264,12 @@ def DLS_all_pose_est(points12, points2d, P1, P2,
 
 
 def getInliners(kp1, kp2, matches, K1, K2, distCoeffs1, distCoeffs2, threshold, prob, no_intrinsic=False):
-    pts1 = np.float32([kp1[m.queryIdx].pt for m in matches]).reshape(-1, 2)
-    pts2 = np.float32([kp2[m.trainIdx].pt for m in matches]).reshape(-1, 2)
+    if isinstance(kp1, cv2.KeyPoint):
+        pts1 = np.float32([kp1[m.queryIdx].pt for m in matches]).reshape(-1, 2)
+        pts2 = np.float32([kp2[m.trainIdx].pt for m in matches]).reshape(-1, 2)
+    else:
+        pts1 = np.float32([kp1[m[0]] for m in matches]).reshape(-1, 2)
+        pts2 = np.float32([kp2[m[1]] for m in matches]).reshape(-1, 2)
     _, mask_F = cv2.findFundamentalMat(pts1, pts2, cv2.FM_RANSAC, threshold, prob)
     _, mask_E = cv2.findEssentialMat(pts1, pts2, K1, cv2.RANSAC, prob, threshold) if not no_intrinsic else (
     None, np.zeros(len(matches)))
