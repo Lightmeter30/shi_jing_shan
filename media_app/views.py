@@ -18,7 +18,7 @@ import numpy as np
 import cv2, numpy
 import time
 
-from lightglue import LightGlue, SuperPoint, DISK
+from lightglue import LightGlue, SuperPoint, DISK, SIFT, ALIKED, DoGHardNet
 from lightglue.utils import load_image, rbd, read_image, numpy_image_to_torch, resize_image
 from lightglue import viz2d
 import torch
@@ -182,7 +182,7 @@ def image_transform(image: numpy):
         return image
     # rotate the src image 90 degrees clockwise
     rotated_image = cv2.transpose(image)
-    # rotated_image = cv2.flip(rotated_image, 1)
+    # rotated_image = cv2.flip(rotated_image, 1) # used when the image is not mirrored
     return rotated_image
 
 
@@ -287,19 +287,21 @@ def request_NVLAD_redir(request):
 
         feature_extractor = SuperPoint(max_num_keypoints=2048).eval().to(settings.DEVICE)  # load the extractor
         feature_match = LightGlue(features="superpoint").eval().to(settings.DEVICE)
+        match_num = 500
+        use_gray = True
         distCoeffs = None
-        useFilter = True
+        useFilter = False
         filter_num = 100
         filter_params = {'distCoeffs1': None, 'distCoeffs2': None, 'threshold': 8., 'prob': 0.99, 'no_intrinsic': True}
         drawMatch = True
-        timeout = 30
+        timeout = 45
         W = 480
         H = 640
         est_focal = np.sqrt(W ** 2 + H ** 2) * 1428.643433 / 1440
         est_K = np.array([[est_focal, 0, W / 2.], [0, est_focal, H / 2.], [0, 0, 1]])
         for qimname, v in pred_imgs.items():
             qim = os.path.join(tempimages, qimname)
-            image3 = read_image(qim)
+            image3 = read_image(qim, grayscale=use_gray)
             print("image3 src shape is :", image3.shape)
             image3 = image_transform(image3)
             image3, _ = resize_image(image3, (H, W))
@@ -328,7 +330,7 @@ def request_NVLAD_redir(request):
             ground_P3 = read_pose_3dscanner(ground_truth) if os.path.exists(ground_truth) else default_P
             ground_truth = ''
             is_stop = False
-            stop_inliner_rate = 0.96
+            stop_inliner_rate = .95
             use_DST_inliner_rate = 0.5
             min_traverse_windows = 10
             init_traverse_windows = 30
@@ -341,7 +343,7 @@ def request_NVLAD_redir(request):
                 meet_best = False
 
                 sim1 = v[i][0]
-                image1 = read_image(sim1)
+                image1 = read_image(sim1, grayscale=use_gray)
                 image1 = image_transform(image1)
                 image1, _ = resize_image(image1, (H, W))
                 # image1 = cv2.resize(image1, (W, H))
@@ -359,7 +361,8 @@ def request_NVLAD_redir(request):
                 kp3 = feats3out['keypoints'].cpu().numpy()
                 matches13 = feature_match({"image0": feats1, "image1": feats3})
                 matches13out = rbd(matches13)
-                good_matches13 = matches13out['matches'].cpu().numpy()
+                scores, sort_idx = torch.sort(matches13out['scores'], descending=True)
+                good_matches13 = matches13out['matches'][sort_idx[:match_num]].cpu().numpy()
                 if useFilter:
                     m13, num13 = getInliners(kp1, kp3, good_matches13, K1, K3, **filter_params)
                     if num13 > filter_num:
@@ -373,7 +376,7 @@ def request_NVLAD_redir(request):
                         break
 
                     sim2 = v[j][0]
-                    image2 = read_image(sim2)
+                    image2 = read_image(sim2, grayscale=use_gray)
                     image2 = image_transform(image2)
                     image2, _ = resize_image(image2, (H, W))
                     # image2 = cv2.resize(image2, (W, H))
@@ -384,7 +387,8 @@ def request_NVLAD_redir(request):
                     kp2 = feats2out['keypoints'].cpu().numpy()
                     matches12 = feature_match({"image0": feats1, "image1": feats2})
                     matches12out = rbd(matches12)
-                    good_matches12 = matches12out['matches'].cpu().numpy()
+                    scores, sort_idx = torch.sort(matches12out['scores'], descending=True)
+                    good_matches12 = matches12out['matches'][sort_idx[:match_num]].cpu().numpy()
                     if useFilter:
                         m12, num12 = getInliners(kp1, kp2, good_matches12, K1, K2, **filter_params)
                         if num12 > filter_num:
@@ -406,9 +410,12 @@ def request_NVLAD_redir(request):
                             print("time out 3")
                             break
                         continue
-                    points1 = kp1[matches123[:, 0]].reshape(-1, 1, 2)
-                    points2 = kp2[matches123[:, 1]].reshape(-1, 1, 2)
-                    points3 = kp3[matches123[:, 2]].reshape(-1, 1, 2)
+                    points1 = (kp1[matches123[:, 0]]).reshape(-1, 1, 2)
+                    points2 = (kp2[matches123[:, 1]]).reshape(-1, 1, 2)
+                    points3 = (kp3[matches123[:, 2]]).reshape(-1, 1, 2)
+                    # points1 = np.copy(kp1[matches123[:, 0]]).reshape(-1, 1, 2)
+                    # points2 = np.copy(kp2[matches123[:, 1]]).reshape(-1, 1, 2)
+                    # points3 = np.copy(kp3[matches123[:, 2]]).reshape(-1, 1, 2)
                     points3d = cv2.triangulatePoints(K1 @ P1, K2 @ P2, points1, points2)
                     points3d = cv2.convertPointsFromHomogeneous(points3d.T).squeeze()
 
@@ -416,7 +423,7 @@ def request_NVLAD_redir(request):
                         rot_vec1, _ = cv2.Rodrigues(P1[:3, :3])
                         shift1 = P1[:3, 3:]
                         success, R, T, inliners = cv2.solvePnPRansac(points3d, points3, K3, distCoeffs,
-                                                                     useExtrinsicGuess=True, rvec=rot_vec1,
+                                                                     useExtrinsicGuess=False, rvec=rot_vec1,
                                                                      tvec=shift1)
                         if success and inliners is not None:
                             inliners = inliners.squeeze()
