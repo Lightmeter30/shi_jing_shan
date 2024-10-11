@@ -1,0 +1,1 @@
+/home/vr717/.conda/envs/django-test/bin/python /media/vr717/新加卷/code/relocation/DjangoTest/manage.py runserver 10.147.18.198:8000
