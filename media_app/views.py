@@ -190,7 +190,7 @@ def image_transform(image: numpy):
 def request_NVLAD_redir(request):
     start_init = time.time()
     img_loc = request.GET.get('source_location', 'temps/')
-    img_loc = os.path.join(img_loc, 'color')
+    # img_loc = os.path.join(img_loc, 'color')
     src_loc = os.path.join(settings.MEDIA_ROOT, 'images/', img_loc)
     dataset_loc = img_loc.split('/')[0]
     intri_loc = os.path.join(settings.MEDIA_ROOT, 'images/',
@@ -218,7 +218,7 @@ def request_NVLAD_redir(request):
             os.makedirs(tempfolder)
             os.makedirs(tempfeature)
             os.makedirs(tempimages)
-
+        # get images from body.images
         images = request.FILES.getlist('images')
 
         if images is None or len(images) == 0:

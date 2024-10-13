@@ -17,7 +17,7 @@ import torch
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 COLMAP_PATH = 'colmap'
-NetVLAD_PATH = '/home/vr717/Documents/zlk/Patch-NetVLAD'
+NetVLAD_PATH = '/media/vr717/新加卷/code/relocation/Patch-NetVLAD'
 os.environ['MKL_THREADING_LAYER'] = 'GNU'
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 'mps', 'cpu'
 
