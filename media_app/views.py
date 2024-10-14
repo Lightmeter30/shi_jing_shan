@@ -162,6 +162,7 @@ def request_NVLAD(request):
         os.makedirs(os.path.join(save_loc, 'index_features/'))
     netpath = settings.NetVLAD_PATH
     nv_params = request.GET.get('nv_params', '')
+    # 获取处理后的原始数据集的图片 /media/images/request_location/color
     folder = os.path.join(settings.MEDIA_ROOT, 'images/', req_loc)
     if os.path.exists(folder):
         # feature extraction
@@ -190,7 +191,7 @@ def image_transform(image: numpy):
 def request_NVLAD_redir(request):
     start_init = time.time()
     img_loc = request.GET.get('source_location', 'temps/')
-    # img_loc = os.path.join(img_loc, 'color')
+    img_loc = os.path.join(img_loc, 'color')
     src_loc = os.path.join(settings.MEDIA_ROOT, 'images/', img_loc)
     dataset_loc = img_loc.split('/')[0]
     intri_loc = os.path.join(settings.MEDIA_ROOT, 'images/',
@@ -235,6 +236,7 @@ def request_NVLAD_redir(request):
         camera_matrix = request.POST.get('camera_matrix')
         if camera_matrix is not None:
             camera_matrix = json.loads(camera_matrix)
+        # q相机内参
         qintrinsic = {}
 
         with open(tempquery, 'w') as qtxt:
@@ -288,7 +290,7 @@ def request_NVLAD_redir(request):
         feature_extractor = SuperPoint(max_num_keypoints=2048).eval().to(settings.DEVICE)  # load the extractor
         feature_match = LightGlue(features="superpoint").eval().to(settings.DEVICE)
         distCoeffs = None
-        useFilter = True
+        useFilter = False
         filter_num = 100
         filter_params = {'distCoeffs1': None, 'distCoeffs2': None, 'threshold': 8., 'prob': 0.99, 'no_intrinsic': True}
         drawMatch = True
@@ -553,6 +555,8 @@ def request_NVLAD_redir(request):
                 print(
                     f'Loss rot vec dir:{np.linalg.norm(rot_vec_p3 / np.linalg.norm(rot_vec_p3) - rot_vec_qim / np.linalg.norm(rot_vec_qim))}')
 
+        print(f'saved_path:{saved_images}')
+        print(f'positions:{positions}')
         return JsonResponse({'message': 'Folder Found', 'saved_path': saved_images, 'positions': positions}, status=200)
 
     else:
