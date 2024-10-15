@@ -189,6 +189,16 @@ def image_transform(image: numpy):
 
 @csrf_exempt
 def request_NVLAD_redir(request):
+    # saved_images = ['/media/vr717/image.jpg']
+    # positions = {
+    #     'image.jpg': [
+    #         [0.022384, 0.993749, 0.109367, 2.965258],
+    #         [-0.998496, 0.016746, 0.052199, -0.169641],
+    #         [0.050041, -0.110371, 0.992630, 2.639569],
+    #         ]
+    # }
+    # [0.000000, 0.000000, 0.000000, 1.000000]
+    # return JsonResponse({'message': 'Folder Found', 'saved_path': saved_images, 'positions': positions}, status=200)
     start_init = time.time()
     img_loc = request.GET.get('source_location', 'temps/')
     img_loc = os.path.join(img_loc, 'color')
@@ -233,6 +243,10 @@ def request_NVLAD_redir(request):
         K = np.array([[1428.643433, 0.000000, 1428.643433],
                       [0.000000, 970.724121, 716.204285],
                       [0.000000, 0.000000, 1.000000]])
+        BBB = np.array([[0.022384, 0.993749, 0.109367, 2.965258],
+                [-0.998496, 0.016746, 0.052199, -0.169641],
+                [0.050041, -0.110371, 0.992630, 2.639569],
+                [0.000000, 0.000000, 0.000000, 1.000000]])
         camera_matrix = request.POST.get('camera_matrix')
         if camera_matrix is not None:
             camera_matrix = json.loads(camera_matrix)
@@ -343,11 +357,15 @@ def request_NVLAD_redir(request):
                 meet_best = False
 
                 sim1 = v[i][0]
+                # print(f'sim1:{v[i][0]}')
+                # sim1 = '/media/vr717/新加卷/code/relocation/DjangoTest/media/images/sjs1009/color/frame-000002.color.jpg'
                 image1 = read_image(sim1)
                 image1 = image_transform(image1)
                 image1, _ = resize_image(image1, (H, W))
                 # image1 = cv2.resize(image1, (W, H))
-                K1 = est_K
+                print(f'K1: {read_pose_3dscanner(v[i][1])[:, :-1]}')
+                K1 = read_pose_3dscanner(v[i][1])[:, :-1] if os.path.exists(v[i][1]) else est_K
+                # K1 = est_K
                 print(f'image1 intrinsic:{K1}')
                 print(f'image1 shape:{image1.shape}')
                 P1 = read_pose_3dscanner(v[i][2]) if os.path.exists(v[i][2]) else np.eye(3, 4)
@@ -375,11 +393,14 @@ def request_NVLAD_redir(request):
                         break
 
                     sim2 = v[j][0]
+                    # print(f'sim2:{v[j][0]}')
+                    # sim2 = '/media/vr717/新加卷/code/relocation/DjangoTest/media/images/sjs1009/color/frame-000002.color.jpg'
                     image2 = read_image(sim2)
                     image2 = image_transform(image2)
                     image2, _ = resize_image(image2, (H, W))
                     # image2 = cv2.resize(image2, (W, H))
-                    K2 = est_K
+                    K2 = read_pose_3dscanner(v[j][1])[:, :-1] if os.path.exists(v[j][1]) else est_K
+                    # K2 = est_K
                     P2 = read_pose_3dscanner(v[j][2]) if os.path.exists(v[j][2]) else np.eye(3, 4)
                     feats2 = feature_extractor.extract(numpy_image_to_torch(image2).to(settings.DEVICE))
                     feats2out = rbd(feats2)
