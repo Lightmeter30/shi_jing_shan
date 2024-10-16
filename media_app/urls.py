@@ -2,7 +2,7 @@
 from django.urls import path
 
 from .views import upload_video, upload_image, upload_multiple_images, upload_multiple_videos, request_colmap_auto, \
-    request_colmap, request_NVLAD, request_NVLAD_redir
+    request_colmap, request_NVLAD, request_NVLAD_redir, test_read_image
 
 urlpatterns = [
     path('upload_video/', upload_video, name='upload_video'),
@@ -17,5 +17,6 @@ urlpatterns = [
     path('request_colmap/', request_colmap, name='request_colmap'),
     path('request_NVLAD/', request_NVLAD, name='request_NVLAD'),
     path('request_NVLAD_redir/', request_NVLAD_redir, name='request_NVLAD_redir'),
+    path('test_read_image/', test_read_image, name='test_read_image')
 
 ]
