@@ -195,7 +195,8 @@ return point3D Nx4(齐次坐标)
 '''
 def pixel_to_world(points: numpy, depth, K: numpy, P: numpy):
   points3D = []
-  depth_image = read_image(depth)
+  # TODO: may change
+  depth_image = read_image('/home/takune/relocation/shi_jing_shan/media/images/sjs1009/depth/frame-000000.depth.jpg')
   depth_image = image_transform(depth_image)
   depth_image = resize_image(depth_image)
   if depth_image is None:
@@ -204,23 +205,39 @@ def pixel_to_world(points: numpy, depth, K: numpy, P: numpy):
   # 输出深度图的基本信息
   print(f"Depth image shape: {depth_image.shape}")
   print(f"Data type: {depth_image.dtype}")
+  print(f"depth_image[1][1]: {depth_image[1][1]}")
+  return
   # 构造齐次像素坐标Nx3
-  points = np.hstack((points, np.ones((points.shape[0], 1))))
-  # 计算相机位姿矩阵的逆矩阵
-  P_inv = np.linalg.inv(P)
-  for point in points:
-    # 将像素坐标转化为相机坐标
-    depth_temp = depth_image[point[1], point[0]]
-    if depth_temp > 0:
-      x = (point[0] - K[0,2]) * depth_temp / K[0, 0]
-      y = (point[1] - K[1,2]) *depth_temp / K[1, 1]
-      z = depth_temp
-      camera_coords = np.array([x, y, z, 1])
-    else:
-      continue
-    world_coords = P_inv @ camera_coords.T
-    points3D.append(world_coords)
-  return np.array(points3D)
+  # points = np.hstack((points, np.ones((points.shape[0], 1))))
+  # # 计算相机位姿矩阵的逆矩阵
+  # P_inv = np.linalg.inv(P)
+  # for point in points:
+  #   # 将像素坐标转化为相机坐标
+  #   depth_temp = depth_image[point[1], point[0]]
+  #   if depth_temp > 0:
+  #     x = (point[0] - K[0,2]) * depth_temp / K[0, 0]
+  #     y = (point[1] - K[1,2]) *depth_temp / K[1, 1]
+  #     z = depth_temp
+  #     camera_coords = np.array([x, y, z, 1])
+  #   else:
+  #     continue
+  #   world_coords = P_inv @ camera_coords.T
+  #   points3D.append(world_coords)
+  # return np.array(points3D)
+
+@csrf_exempt
+def test_read_image(request):
+  depth_image = read_image('/home/takune/relocation/shi_jing_shan/media/images/sjs1009/depth/frame-000000.depth.jpg')
+  depth_image = image_transform(depth_image)
+  depth_image = resize_image(depth_image)
+  if depth_image is None:
+    raise ValueError('Could not read the depth image.')
+  
+  # 输出深度图的基本信息
+  print(f"Depth image shape: {depth_image.shape}")
+  print(f"Data type: {depth_image.dtype}")
+  print(f"depth_image[1][1]: {depth_image[1][1]}")
+  return
 
 @csrf_exempt
 def request_NVLAD_redir(request):
@@ -426,6 +443,7 @@ def request_NVLAD_redir(request):
                 points3 = kp3[good_matches13[:, 1]].reshape(-1, 1, 2)
                 
                 points3d = pixel_to_world(kp1[matches13[:, 0]], v[i][3], K1, np.vstack(P1, np.array([0,0,0,1])))
+                return JsonResponse({'error': 'TEST IMAGE'}, status=200)
                 points3d = cv2.convertPointsFromHomogeneous(points3d).squeeze()
                 print(f'point3d shape:{points3d.shape}')
                 

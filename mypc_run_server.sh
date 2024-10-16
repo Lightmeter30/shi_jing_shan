@@ -1,0 +1,1 @@
+python /home/takune/relocation/shi_jing_shan/manage.py runserver 10.147.18.82:8000
