@@ -186,6 +186,41 @@ def image_transform(image: numpy):
     # rotated_image = cv2.flip(rotated_image, 1)
     return rotated_image
 
+'''
+points: 特征点集合, 是一个shape为Nx2的数组
+depth: 深度图路径字符串
+K: 相机内参 3x3
+P: 相机位姿4x4
+return point3D Nx4(齐次坐标)
+'''
+def pixel_to_world(points: numpy, depth, K: numpy, P: numpy):
+  points3D = []
+  depth_image = read_image(depth)
+  depth_image = image_transform(depth_image)
+  depth_image = resize_image(depth_image)
+  if depth_image is None:
+    raise ValueError('Could not read the depth image.')
+  
+  # 输出深度图的基本信息
+  print(f"Depth image shape: {depth_image.shape}")
+  print(f"Data type: {depth_image.dtype}")
+  # 构造齐次像素坐标Nx3
+  points = np.hstack((points, np.ones((points.shape[0], 1))))
+  # 计算相机位姿矩阵的逆矩阵
+  P_inv = np.linalg.inv(P)
+  for point in points:
+    # 将像素坐标转化为相机坐标
+    depth_temp = depth_image[point[1], point[0]]
+    if depth_temp > 0:
+      x = (point[0] - K[0,2]) * depth_temp / K[0, 0]
+      y = (point[1] - K[1,2]) *depth_temp / K[1, 1]
+      z = depth_temp
+      camera_coords = np.array([x, y, z, 1])
+    else:
+      continue
+    world_coords = P_inv @ camera_coords.T
+    points3D.append(world_coords)
+  return np.array(points3D)
 
 @csrf_exempt
 def request_NVLAD_redir(request):
@@ -208,6 +243,8 @@ def request_NVLAD_redir(request):
                              request.GET.get('camera_intri_location', os.path.join(dataset_loc, 'intrinsic')))
     exter_loc = os.path.join(settings.MEDIA_ROOT, 'images/',
                              request.GET.get('camera_exter_location', os.path.join(dataset_loc, 'pose')))
+    depth_loc = os.path.join(settings.MEDIA_ROOT, 'images/',
+                             request.GET.get('camera_depth_location', os.path.join(dataset_loc, 'depth')))
     req_loc = os.path.join(settings.MEDIA_ROOT, 'nvlabs/', request.GET.get('request_location', img_loc))
     if req_loc[-1] != '/':
         req_loc = req_loc + '/'
@@ -295,11 +332,13 @@ def request_NVLAD_redir(request):
                     if qimname not in pred_imgs.keys():
                         pred_imgs[qimname] = [
                             (ims[1], os.path.join(intri_loc, simname.split('.')[0] + '.intrinsic_color.txt'),
-                             os.path.join(exter_loc, simname.split('.')[0] + '.pose.txt'))]
+                             os.path.join(exter_loc, simname.split('.')[0] + '.pose.txt'),
+                             os.path.join(depth_loc, simname.split('.')[0] + '.depth.jpg'))]
                     else:
                         pred_imgs[qimname].append(
                             (ims[1], os.path.join(intri_loc, simname.split('.')[0] + '.intrinsic_color.txt'),
-                             os.path.join(exter_loc, simname.split('.')[0] + '.pose.txt')))
+                             os.path.join(exter_loc, simname.split('.')[0] + '.pose.txt'),
+                             os.path.join(depth_loc, simname.split('.')[0] + '.depth.jpg')))
 
         feature_extractor = SuperPoint(max_num_keypoints=2048).eval().to(settings.DEVICE)  # load the extractor
         feature_match = LightGlue(features="superpoint").eval().to(settings.DEVICE)
@@ -308,7 +347,7 @@ def request_NVLAD_redir(request):
         filter_num = 100
         filter_params = {'distCoeffs1': None, 'distCoeffs2': None, 'threshold': 8., 'prob': 0.99, 'no_intrinsic': True}
         drawMatch = True
-        timeout = 30
+        timeout = 40
         W = 480
         H = 640
         est_focal = np.sqrt(W ** 2 + H ** 2) * 1428.643433 / 1440
@@ -432,9 +471,10 @@ def request_NVLAD_redir(request):
                     points1 = kp1[matches123[:, 0]].reshape(-1, 1, 2)
                     points2 = kp2[matches123[:, 1]].reshape(-1, 1, 2)
                     points3 = kp3[matches123[:, 2]].reshape(-1, 1, 2)
-                    points3d = cv2.triangulatePoints(K1 @ P1, K2 @ P2, points1, points2)
-                    points3d = cv2.convertPointsFromHomogeneous(points3d.T).squeeze()
-
+                    # points3d = cv2.triangulatePoints(K1 @ P1, K2 @ P2, points1, points2)
+                    points3d = pixel_to_world(kp1[matches13[:, 0]], v[i][3], K1, np.vstack(P1, np.array([0,0,0,1])))
+                    points3d = cv2.convertPointsFromHomogeneous(points3d).squeeze()
+                    print(f'point3d shape:{points3d.shape}')
                     if points3d.shape[0] >= 100:
                         rot_vec1, _ = cv2.Rodrigues(P1[:3, :3])
                         shift1 = P1[:3, 3:]
@@ -507,30 +547,39 @@ def request_NVLAD_redir(request):
                         print(f'points3d num:{len(best_points3d)}')
                         useRANSAC = False
                         tmp_inliners = best_inliners if len(best_inliners) > 20 else np.arange(len(best_points3d))
-                        if 50 <= len(best_inliners) < max(50, len(best_points3d) * use_DST_inliner_rate):
-                            init_params = DLS_pose_est_init_params(best_P[0], best_K[2])
-                            print(f'init_params:{init_params}')
-                            success0, R0, T0, K3new, _ = DLS_pose_est(best_points3d[tmp_inliners],
-                                                                      best_points2d[2][tmp_inliners].squeeze(),
-                                                                      init_params,
-                                                                      useRANSAC=useRANSAC)
-                            print(f'new K3:{K3new}')
-                            print(f'DLS pose est success:{success0}')
-                            if success0:
-                                Rtmp, _ = cv2.Rodrigues(R0)
-                                pose = np.hstack((Rtmp, T0))
-                                best_P[2] = pose
-                        elif False and len(best_inliners) <= 12 and len(best_points3d) > 200:
-                            rot_vec1, _ = cv2.Rodrigues(best_P[0][:3, :3])
-                            shift1 = best_P[0][:3, 3:]
-                            success0, R0, T0 = cv2.solvePnP(best_points3d, best_points2d[2].squeeze(), K3, distCoeffs,
+                        # RANSAC pnp
+                        rot_vec1, _ = cv2.Rodrigues(best_P[0][:3, :3])
+                        shift1 = best_P[0][:3, 3:]
+                        success0, R0, T0 = cv2.solvePnP(best_points3d, best_points2d[2].squeeze(), K3, distCoeffs,
                                                             useExtrinsicGuess=True, rvec=rot_vec1, tvec=shift1)
-                            if success0:
-                                Rtmp, _ = cv2.Rodrigues(R0)
-                                pose = np.hstack((Rtmp, T0))
-                                best_P[2] = pose
-                        elif False and len(best_inliners) <= 12 and len(best_points3d) <= 200:
-                            best_P[2] = best_P[0]
+                        if success0:
+                            Rtmp, _ = cv2.Rodrigues(R0)
+                            pose = np.hstack((Rtmp, T0))
+                            best_P[2] = pose
+                        # if 50 <= len(best_inliners) < max(50, len(best_points3d) * use_DST_inliner_rate):
+                        #     init_params = DLS_pose_est_init_params(best_P[0], best_K[2])
+                        #     print(f'init_params:{init_params}')
+                        #     success0, R0, T0, K3new, _ = DLS_pose_est(best_points3d[tmp_inliners],
+                        #                                               best_points2d[2][tmp_inliners].squeeze(),
+                        #                                               init_params,
+                        #                                               useRANSAC=useRANSAC)
+                        #     print(f'new K3:{K3new}')
+                        #     print(f'DLS pose est success:{success0}')
+                        #     if success0:
+                        #         Rtmp, _ = cv2.Rodrigues(R0)
+                        #         pose = np.hstack((Rtmp, T0))
+                        #         best_P[2] = pose
+                        # elif False and len(best_inliners) <= 12 and len(best_points3d) > 200:
+                        #     rot_vec1, _ = cv2.Rodrigues(best_P[0][:3, :3])
+                        #     shift1 = best_P[0][:3, 3:]
+                        #     success0, R0, T0 = cv2.solvePnP(best_points3d, best_points2d[2].squeeze(), K3, distCoeffs,
+                        #                                     useExtrinsicGuess=True, rvec=rot_vec1, tvec=shift1)
+                        #     if success0:
+                        #         Rtmp, _ = cv2.Rodrigues(R0)
+                        #         pose = np.hstack((Rtmp, T0))
+                        #         best_P[2] = pose
+                        # elif False and len(best_inliners) <= 12 and len(best_points3d) <= 200:
+                        #     best_P[2] = best_P[0]
 
                         positions[qimname] = best_P[2].tolist()
                         if drawMatch:
