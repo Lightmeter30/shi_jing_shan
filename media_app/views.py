@@ -196,11 +196,12 @@ return point3D Nx4(齐次坐标)
 '''
 def pixel_to_world(points: numpy, matchs: numpy,depth, K: numpy, P: numpy):
   # TODO: may change
-  Z_Near, Z_Far = 0.5, 5
+  Z_Near, Z_Far = 0.5, 8
+  # K变换单位
   points3D = []
   matchs_new = []
   # TODO: may change
-  depth_image = Image.open('/home/takune/relocation/shi_jing_shan/media/images/sjs1009/depth/frame-000069.depth.jpg')
+  depth_image = Image.open(depth)
   if depth_image is None:
     raise ValueError('Could not read the depth image.')
   depth_image = depth_image.rotate(90, expand=True)
@@ -243,7 +244,7 @@ def test_read_image(request):
   print(f'before width x height: {d_width} x {d_height}')
   depth_image = depth_image.rotate(90, expand=True)
   depth_image = depth_image.transpose(Image.FLIP_TOP_BOTTOM)
-  depth_image = depth_image.resize((640, 480))
+  # depth_image = depth_image.resize((640, 480))
   d_width, d_height = depth_image.size
   print(f'after width x height: {d_width} x {d_height}')
   
@@ -432,6 +433,7 @@ def request_NVLAD_redir(request):
                 # image1 = cv2.resize(image1, (W, H))
                 # TODO: may change print(f'K1: {read_pose_3dscanner(v[i][1])[:, :-1]}')
                 K1 = read_pose_3dscanner(v[i][1])[:, :-1] if os.path.exists(v[i][1]) else est_K
+                # K1 = K1 / 1000
                 # K1 = est_K
                 # TODO: print(f'image1 intrinsic:{K1}')
                 # print(f'image1 shape:{image1.shape}')
