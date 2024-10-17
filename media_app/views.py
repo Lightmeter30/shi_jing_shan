@@ -196,15 +196,16 @@ return point3D Nx4(齐次坐标)
 '''
 def pixel_to_world(points: numpy, matchs: numpy,depth, K: numpy, P: numpy):
   # TODO: may change
-  Z_Near, Z_Far = 0.3, 1000
+  Z_Near, Z_Far = 0.5, 5
   points3D = []
   matchs_new = []
   # TODO: may change
-  depth_image = Image.open('/home/takune/relocation/shi_jing_shan/media/images/sjs1009/depth/frame-000000.depth.jpg')
+  depth_image = Image.open('/home/takune/relocation/shi_jing_shan/media/images/sjs1009/depth/frame-000069.depth.jpg')
   if depth_image is None:
     raise ValueError('Could not read the depth image.')
+  depth_image = depth_image.rotate(90, expand=True)
+  depth_image = depth_image.transpose(Image.FLIP_TOP_BOTTOM)
   depth_image = depth_image.resize((640, 480))
-  # 输出深度图的基本信息
   # print(f"Depth image shape: {depth_image.size}")
   
   # 构造齐次像素坐标Nx3
@@ -220,6 +221,7 @@ def pixel_to_world(points: numpy, matchs: numpy,depth, K: numpy, P: numpy):
     if depth_temp != 255 and depth_temp != 0:
       matchs_new.append(match)
       depth_final = Z_Near + (depth_temp / 255) * (Z_Far - Z_Near)
+      print(f'depth output: {depth_final}')
       x = (point[0] - K[0,2]) * depth_final / K[0, 0]
       y = (point[1] - K[1,2]) * depth_final / K[1, 1]
       z = depth_final
@@ -237,7 +239,15 @@ def test_read_image(request):
   depth_image = Image.open('/home/takune/relocation/shi_jing_shan/media/images/sjs1009/depth/frame-000000.depth.jpg')
   if depth_image is None:
     raise ValueError('Could not read the depth image.')
+  d_width, d_height = depth_image.size
+  print(f'before width x height: {d_width} x {d_height}')
+  depth_image = depth_image.rotate(90, expand=True)
+  depth_image = depth_image.transpose(Image.FLIP_TOP_BOTTOM)
   depth_image = depth_image.resize((640, 480))
+  d_width, d_height = depth_image.size
+  print(f'after width x height: {d_width} x {d_height}')
+  
+  depth_image.save('/home/takune/relocation/shi_jing_shan/media/test/test.jpg')
   # 输出深度图的基本信息
   print(f"Depth image shape: {depth_image.size}")
   print(f"Depth image shape: {depth_image.getpixel((1,1))[0] / 255 }")
@@ -372,6 +382,11 @@ def request_NVLAD_redir(request):
             print("image3 src shape is :", image3.shape)
             image3 = image_transform(image3)
             image3, _ = resize_image(image3, (H, W))
+            # TODO: may change
+            # fs = FileSystemStorage('/home/takune/relocation/shi_jing_shan/media/images/sjs1009/depth/')
+            # saved_image = fs.save('test.jpg', image3)
+            
+            # return JsonResponse({'success': 'test_image_ok'}, status=200)
             # image3 = cv2.resize(image3, (W, H))
             K3 = est_K
             print(f'image3 intrinsic:{K3}')
@@ -387,6 +402,7 @@ def request_NVLAD_redir(request):
             best_keypoints = None
             best_description = None
             best_tracks = None
+            best_depth = None
             best_match = None
             best_points2d = None
             best_points3d = np.array([])
@@ -479,6 +495,7 @@ def request_NVLAD_redir(request):
                       best_points2d = [points1, points3]
                       best_points3d = points3d
                       best_K = [K1, K3]
+                      best_depth = v[i][3]
                       Rtmp, _ = cv2.Rodrigues(R)
                       pose = np.hstack((Rtmp, T))
                       best_P = [P1, pose]
@@ -491,6 +508,7 @@ def request_NVLAD_redir(request):
                       # is_stop = best_inliners_rate > stop_inliner_rate
                       meet_best = True
                       traverse_windows = init_traverse_windows if best_inliners_rate >= 0.2 else 0.8 * traverse_windows
+                      break
                       if os.path.exists(ground_truth) and np.linalg.norm(residuals) < min_residuals_norm:
                         min_residuals_norm = np.linalg.norm(residuals)
                         # TODO: may change
@@ -560,6 +578,14 @@ def request_NVLAD_redir(request):
                     best_P[1] = pose
                     positions[qimname] = best_P[1].tolist()
                     if drawMatch:
+                      print(f'best_depth: {best_depth}')
+                      depth_image = Image.open(best_depth)
+                      depth_image = depth_image.rotate(90, expand=True)
+                      depth_image = depth_image.transpose(Image.FLIP_TOP_BOTTOM)
+                      depth_image = depth_image.resize((640, 480))
+                      depth_image.save(storage_path + os.sep + "best_depth.jpg")
+                      d_width, d_height = depth_image.size
+                      print(f'width x height: {d_width} x {d_height}')
                       dmatch13 = [cv2.DMatch(m[0], m[1], 0) for m in best_match[best_inliners]]
                       bkp1 = [cv2.KeyPoint(kp[0], kp[1], 1, -1, 0, 0, -1) for kp in best_keypoints[0]]
                       bkp3 = [cv2.KeyPoint(kp[0], kp[1], 1, -1, 0, 0, -1) for kp in best_keypoints[1]]
