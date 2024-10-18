@@ -1,5 +1,5 @@
 *.sqlite3
 *.png
 *.webp
+**/__pycache__
 /media
-/django_project/__pycache__

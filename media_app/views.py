@@ -206,9 +206,9 @@ def pixel_to_world(points: numpy, matchs: numpy,depth, K: numpy, P: numpy):
   depth_image = Image.open(depth)
   if depth_image is None:
     raise ValueError('Could not read the depth image.')
-  depth_image = depth_image.rotate(90, expand=True)
-  depth_image = depth_image.transpose(Image.FLIP_TOP_BOTTOM)
-  depth_image = depth_image.resize((640, 480))
+  # depth_image = depth_image.rotate(90, expand=True)
+  # depth_image = depth_image.transpose(Image.FLIP_TOP_BOTTOM)
+  depth_image = depth_image.resize((480, 640))
   # print(f"Depth image shape: {depth_image.size}")
   
   # 构造齐次像素坐标Nx3
@@ -219,7 +219,7 @@ def pixel_to_world(points: numpy, matchs: numpy,depth, K: numpy, P: numpy):
     # TODO: may change将像素坐标转化为相机坐标 
     point = points[match[0]]
     # print(f'(x, y): ({point[1]}, {point[0]})')
-    depth_temp = depth_image.getpixel((point[1], point[0]))[0]
+    depth_temp = depth_image.getpixel((point[0], point[1]))[0]
     # depth_temp = Z_Near + (depth_image.getpixel((point[1], point[0]))[0] / 255) * ()
     if depth_temp != 255 and depth_temp != 0:
       matchs_new.append(match)
@@ -249,9 +249,9 @@ def test_read_image(request):
     raise ValueError('Could not read the depth image.')
   d_width, d_height = depth_image.size
   print(f'before width x height: {d_width} x {d_height}')
-  depth_image = depth_image.rotate(90, expand=True)
-  depth_image = depth_image.transpose(Image.FLIP_TOP_BOTTOM)
-  depth_image = depth_image.resize((640, 480))
+  # depth_image = depth_image.rotate(90, expand=True)
+  # depth_image = depth_image.transpose(Image.FLIP_TOP_BOTTOM)
+  depth_image = depth_image.resize((480, 640))
   d_width, d_height = depth_image.size
   print(f'after width x height: {d_width} x {d_height}')
   
@@ -335,6 +335,14 @@ def request_NVLAD_redir(request):
                     save_to_jpg(os.path.join(storage_path, saved_image), os.path.join(storage_path, image_name)))
                 qtxt.write(image_name + '\n')
 
+
+        # 此时图片已经被逆时针翻转90°
+        # TODO: magic code return 000000
+        # default_im = os.path.join(exter_loc, 'frame-000035.pose.txt')
+        # default_P = read_pose_3dscanner(default_im)
+        # print(default_im)
+        # return JsonResponse({'message': 'Folder Found', 'saved_path': saved_images, 'positions': {'image.jpg': default_P.tolist()}}, status=200)
+
         # command_conda = "source /home/vr717/anaconda3/etc/profile.d/conda.sh && conda activate patchnetvlad "
         # command_conda = command_conda + f'&& bash match_and_cal_pose.sh {req_loc} {src_loc} {tempfolder} '
         # command_conda = f'bash match_and_cal_pose.sh {req_loc} {src_loc} {tempfolder} '
@@ -387,9 +395,14 @@ def request_NVLAD_redir(request):
         for qimname, v in pred_imgs.items():
             qim = os.path.join(tempimages, qimname)
             image3 = read_image(qim)
-            print("image3 src shape is :", image3.shape)
+            print(qim)
+            print(f"before image3 shape is : {image3.shape}")
             image3 = image_transform(image3)
             image3, _ = resize_image(image3, (H, W))
+            print(f'after images3-shape: {image3.shape}')
+            image3 = np.uint8(image3)
+            img = Image.fromarray(image3)
+            img.save(tempimages + '/image3.jpg', "JPEG")
             # TODO: may change
             # fs = FileSystemStorage('/home/takune/relocation/shi_jing_shan/media/images/sjs1009/depth/')
             # saved_image = fs.save('test.jpg', image3)
@@ -398,8 +411,8 @@ def request_NVLAD_redir(request):
             # image3 = cv2.resize(image3, (W, H))
             K3 = est_K
             # K3 = np.array([[968.857117, 0, 240.0], [0, 1337.749634, 320], [0, 0, 1]])
-            print(f'image3 intrinsic:{K3}')
-            print(f'image3 shape:{image3.shape}')
+            # print(f'image3 intrinsic:{K3}')
+            # print(f'image3 shape:{image3.shape}')
 
             best_inliners = np.array([])
             best_inliners_rate = 0
@@ -438,6 +451,11 @@ def request_NVLAD_redir(request):
                 image1 = read_image(sim1)
                 image1 = image_transform(image1)
                 image1, _ = resize_image(image1, (H, W))
+                # save image1
+                # image1 = np.uint8(image1)
+                # img = Image.fromarray(image1)
+                # img.save(tempimages + '/image1.jpg', "JPEG")
+                # return JsonResponse({'message': 'SHIT'}, status=200)
                 # image1 = cv2.resize(image1, (W, H))
                 # TODO: may change print(f'K1: {read_pose_3dscanner(v[i][1])[:, :-1]}')
                 # K1 = read_pose_3dscanner(v[i][1])[:, :-1] if os.path.exists(v[i][1]) else est_K
@@ -488,15 +506,15 @@ def request_NVLAD_redir(request):
                 if points3d.shape[0] >= 100:
                   rot_vec1, _ = cv2.Rodrigues(P1[:3, :3])
                   shift1 = P1[:3, 3:]
-                  print(f'before solvePnPRansac R:{rot_vec1}')
-                  print(f'before solvePnPRansac T: {shift1}')
+                  # print(f'before solvePnPRansac R:{rot_vec1}')
+                  # print(f'before solvePnPRansac T: {shift1}')
                   success, R, T, inliners = cv2.solvePnPRansac(points3d, points3, K3, distCoeffs,
                                                                useExtrinsicGuess=True, rvec=rot_vec1,
                                                                tvec=shift1)
-                  print(f'after solvePnPRansac R:{R}')
-                  print(f'after solvePnPRansac T: {T}')
-                  print(f'after solvePnPRansac image1 pose:{P1}')
-                  print(f'K3: {K3}')
+                  # print(f'after solvePnPRansac R:{R}')
+                  # print(f'after solvePnPRansac T: {T}')
+                  # print(f'after solvePnPRansac image1 pose:{P1}')
+                  # print(f'K3: {K3}')
                   # return JsonResponse({'message': 'test read P1'}, status=200)
                   if success and inliners is not None:
                     inliners = inliners.squeeze()
@@ -530,6 +548,7 @@ def request_NVLAD_redir(request):
                       # is_stop = best_inliners_rate > stop_inliner_rate
                       meet_best = True
                       traverse_windows = init_traverse_windows if best_inliners_rate >= 0.2 else 0.8 * traverse_windows
+                      print('get best and break')
                       break
                       if os.path.exists(ground_truth) and np.linalg.norm(residuals) < min_residuals_norm:
                         min_residuals_norm = np.linalg.norm(residuals)
@@ -608,9 +627,7 @@ def request_NVLAD_redir(request):
                 if drawMatch:
                     print(f'best_depth: {best_depth}')
                     depth_image = Image.open(best_depth[3])
-                    depth_image = depth_image.rotate(90, expand=True)
-                    depth_image = depth_image.transpose(Image.FLIP_TOP_BOTTOM)
-                    depth_image = depth_image.resize((640, 480))
+                    depth_image = depth_image.resize((480, 640))
                     depth_image.save(storage_path + os.sep + "best_depth.jpg")
                     d_width, d_height = depth_image.size
                     # print(f'width x height: {d_width} x {d_height}')
@@ -668,10 +685,11 @@ def request_NVLAD_redir(request):
           
         print(f'saved_path:{saved_images}')
         print(f'positions:{positions}')
-        print(f'pose: {best_P}')
-        print(f'pose: {P1}')
-        print(f'intrinsic: {best_K[0]}')
-        print(f"database path: {best_depth}")
+        print(f'final pose 1: {best_P[0]}')
+        print(f'final pose 3: {best_P[1]}')
+        # print(f'pose: {P1}')
+        # print(f'intrinsic: {best_K[0]}')
+        # print(f"database path: {best_depth}")
         return JsonResponse({'message': 'Folder Found', 'saved_path': saved_images, 'positions': positions}, status=200)
 
     else:
