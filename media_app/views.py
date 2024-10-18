@@ -199,7 +199,9 @@ def pixel_to_world(points: numpy, matchs: numpy,depth, K: numpy, P: numpy):
   Z_Near, Z_Far = 0.5, 8
   # K变换单位
   points3D = []
+  camera_coords_list = []
   matchs_new = []
+  depth_list = []
   # TODO: may change
   depth_image = Image.open(depth)
   if depth_image is None:
@@ -215,25 +217,30 @@ def pixel_to_world(points: numpy, matchs: numpy,depth, K: numpy, P: numpy):
   P_inv = np.linalg.inv(P)
   for match in matchs:
     # TODO: may change将像素坐标转化为相机坐标 
-    # print(f'(x, y): {point[1], point[0]}')
     point = points[match[0]]
+    # print(f'(x, y): ({point[1]}, {point[0]})')
     depth_temp = depth_image.getpixel((point[1], point[0]))[0]
     # depth_temp = Z_Near + (depth_image.getpixel((point[1], point[0]))[0] / 255) * ()
     if depth_temp != 255 and depth_temp != 0:
       matchs_new.append(match)
       depth_final = Z_Near + (depth_temp / 255) * (Z_Far - Z_Near)
-      print(f'depth output: {depth_final}')
+      depth_list.append(depth_final)
+      # print(f'depth output: {depth_final}')
       x = (point[0] - K[0,2]) * depth_final / K[0, 0]
       y = (point[1] - K[1,2]) * depth_final / K[1, 1]
       z = depth_final
       camera_coords = np.array([x, y, z, 1])
+      camera_coords_list.append(camera_coords)
     else:
       # print(f'illegal depth: {depth_temp}')
       continue
     world_coords = P_inv @ camera_coords.T
+    # print(f"world_coords: {world_coords}")
+    # print(f"u, v: {point[1]} {point[0]}")
+    # break
     points3D.append(world_coords)
   print(f'3d+match{np.array(points3D).shape}, {np.array(matchs_new).shape}')
-  return [np.array(points3D), np.array(matchs_new)]
+  return [np.array(points3D), np.array(matchs_new), np.array(camera_coords_list), np.array(depth_list)]
 
 @csrf_exempt
 def test_read_image(request):
@@ -244,14 +251,14 @@ def test_read_image(request):
   print(f'before width x height: {d_width} x {d_height}')
   depth_image = depth_image.rotate(90, expand=True)
   depth_image = depth_image.transpose(Image.FLIP_TOP_BOTTOM)
-  # depth_image = depth_image.resize((640, 480))
+  depth_image = depth_image.resize((640, 480))
   d_width, d_height = depth_image.size
   print(f'after width x height: {d_width} x {d_height}')
   
   depth_image.save('/home/takune/relocation/shi_jing_shan/media/test/test.jpg')
   # 输出深度图的基本信息
   print(f"Depth image shape: {depth_image.size}")
-  print(f"Depth image shape: {depth_image.getpixel((1,1))[0] / 255 }")
+  print(f"Depth image shape: {depth_image.getpixel((1800,1439))}")
   
   return JsonResponse({'success': 'test_image_ok'}, status=200)
 
@@ -390,6 +397,7 @@ def request_NVLAD_redir(request):
             # return JsonResponse({'success': 'test_image_ok'}, status=200)
             # image3 = cv2.resize(image3, (W, H))
             K3 = est_K
+            # K3 = np.array([[968.857117, 0, 240.0], [0, 1337.749634, 320], [0, 0, 1]])
             print(f'image3 intrinsic:{K3}')
             print(f'image3 shape:{image3.shape}')
 
@@ -432,13 +440,16 @@ def request_NVLAD_redir(request):
                 image1, _ = resize_image(image1, (H, W))
                 # image1 = cv2.resize(image1, (W, H))
                 # TODO: may change print(f'K1: {read_pose_3dscanner(v[i][1])[:, :-1]}')
-                K1 = read_pose_3dscanner(v[i][1])[:, :-1] if os.path.exists(v[i][1]) else est_K
+                # K1 = read_pose_3dscanner(v[i][1])[:, :-1] if os.path.exists(v[i][1]) else est_K
+                # K1 = np.array([[968.857117, 0, 240.0], [0, 1337.749634, 320], [0, 0, 1]])
+                K1 = K3
                 # K1 = K1 / 1000
                 # K1 = est_K
                 # TODO: print(f'image1 intrinsic:{K1}')
                 # print(f'image1 shape:{image1.shape}')
                 P1 = read_pose_3dscanner(v[i][2]) if os.path.exists(v[i][2]) else np.eye(3, 4)
                 # print(f'image1 pose:{P1}')
+                
 
                 feats1 = feature_extractor.extract(numpy_image_to_torch(image1).to(settings.DEVICE))
                 feats1out = rbd(feats1)
@@ -462,8 +473,9 @@ def request_NVLAD_redir(request):
                     print("time out 3")
                     break
                   continue
-                points3d, good_matches13 = pixel_to_world(kp1, good_matches13, v[i][3], K1, np.vstack((P1, np.array([0,0,0,1]))))
-                # return JsonResponse({'error': 'TEST IMAGE'}, status=200)
+                points3d, good_matches13, camera_coords_list, depth_list = pixel_to_world(kp1, good_matches13, v[i][3], K1, np.vstack((P1, np.array([0,0,0,1]))))
+                # print(f'image1 pose:{P1}')
+                # return JsonResponse({'message': 'test read P1'}, status=200)
                 if good_matches13.shape[0] == 0:
                   continue
                 points1 = kp1[good_matches13[:, 0]].reshape(-1, 1, 2)
@@ -476,14 +488,22 @@ def request_NVLAD_redir(request):
                 if points3d.shape[0] >= 100:
                   rot_vec1, _ = cv2.Rodrigues(P1[:3, :3])
                   shift1 = P1[:3, 3:]
+                  print(f'before solvePnPRansac R:{rot_vec1}')
+                  print(f'before solvePnPRansac T: {shift1}')
                   success, R, T, inliners = cv2.solvePnPRansac(points3d, points3, K3, distCoeffs,
                                                                useExtrinsicGuess=True, rvec=rot_vec1,
                                                                tvec=shift1)
+                  print(f'after solvePnPRansac R:{R}')
+                  print(f'after solvePnPRansac T: {T}')
+                  print(f'after solvePnPRansac image1 pose:{P1}')
+                  print(f'K3: {K3}')
+                  # return JsonResponse({'message': 'test read P1'}, status=200)
                   if success and inliners is not None:
                     inliners = inliners.squeeze()
                     # print(f'inliner num:{inliners.shape}')
                     Rtmp, _ = cv2.Rodrigues(R)
                     pose = np.hstack((Rtmp, T))
+                    print(f'after solvePnPRANSAC pose: {pose}')
                     residuals = ground_P3 - pose
                     if len(inliners) >= 100 and (
                             len(inliners) > (best_inliners_rate + best_inliners_rate_window) * len(points3) \
@@ -497,9 +517,9 @@ def request_NVLAD_redir(request):
                       best_points2d = [points1, points3]
                       best_points3d = points3d
                       best_K = [K1, K3]
-                      best_depth = v[i][3]
-                      Rtmp, _ = cv2.Rodrigues(R)
-                      pose = np.hstack((Rtmp, T))
+                      best_depth = v[i]
+                      # Rtmp, _ = cv2.Rodrigues(R)
+                      # pose = np.hstack((Rtmp, T))
                       best_P = [P1, pose]
                       best_image_name = [sim1]
                       best_keypoints = [kp1, kp3]
@@ -565,40 +585,70 @@ def request_NVLAD_redir(request):
             if end - start_init > timeout:
               print('best_ratio failed')
             if best_P is not None:
-                print(f'best inliner num:{len(best_inliners)}')
-                print(f'points3d num:{len(best_points3d)}')
-                useRANSAC = False
-                tmp_inliners = best_inliners if len(best_inliners) > 20 else np.arange(len(best_points3d))
-                # RANSAC pnp
-                rot_vec1, _ = cv2.Rodrigues(best_P[0][:3, :3])
-                shift1 = best_P[0][:3, 3:]
-                success0, R0, T0 = cv2.solvePnP(best_points3d, best_points2d[1].squeeze(), K3, distCoeffs,
-                                                            useExtrinsicGuess=True, rvec=rot_vec1, tvec=shift1)
-                if success0:
-                    Rtmp, _ = cv2.Rodrigues(R0)
-                    pose = np.hstack((Rtmp, T0))
-                    best_P[1] = pose
-                    positions[qimname] = best_P[1].tolist()
-                    if drawMatch:
-                      print(f'best_depth: {best_depth}')
-                      depth_image = Image.open(best_depth)
-                      depth_image = depth_image.rotate(90, expand=True)
-                      depth_image = depth_image.transpose(Image.FLIP_TOP_BOTTOM)
-                      depth_image = depth_image.resize((640, 480))
-                      depth_image.save(storage_path + os.sep + "best_depth.jpg")
-                      d_width, d_height = depth_image.size
-                      print(f'width x height: {d_width} x {d_height}')
-                      dmatch13 = [cv2.DMatch(m[0], m[1], 0) for m in best_match[best_inliners]]
-                      bkp1 = [cv2.KeyPoint(kp[0], kp[1], 1, -1, 0, 0, -1) for kp in best_keypoints[0]]
-                      bkp3 = [cv2.KeyPoint(kp[0], kp[1], 1, -1, 0, 0, -1) for kp in best_keypoints[1]]
-                      img_with_key13 = cv2.drawMatches(best_image_RGB[0], bkp1, best_image_RGB[1],
-                                                       bkp3, dmatch13, None)
-                      compression_params = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
-                      cv2.imwrite(os.path.join(resfolder,
+                # print(f'best inliner num:{len(best_inliners)}')
+                # print(f'points3d num:{len(best_points3d)}')
+                # useRANSAC = False
+                # tmp_inliners = best_inliners if len(best_inliners) > 20 else np.arange(len(best_points3d))
+                # # RANSAC pnp
+                # rot_vec1, _ = cv2.Rodrigues(best_P[0][:3, :3])
+                # shift1 = best_P[0][:3, 3:]
+                # print(f'before solvePnP image1 pose: {P1}')
+                # print(f'before solvePnP R0: {rot_vec1}')
+                # print(f'before solvePnP T0: {shift1}')
+                # success0, R0, T0 = cv2.solvePnP(best_points3d, best_points2d[1].squeeze(), K3, distCoeffs,
+                #                                             useExtrinsicGuess=True, rvec=rot_vec1, tvec=shift1)
+                # print(f'after solvePnP R0:{R0}')
+                # print(f'after solvePnP T0: {T0}')
+                # print(f'after solvePnP image1 pose: {P1}')
+
+                # if success0:
+                # best_P[1] = pose
+                # print(f'after solvePnP pose: {pose}')
+                positions[qimname] = best_P[1].tolist()
+                if drawMatch:
+                    print(f'best_depth: {best_depth}')
+                    depth_image = Image.open(best_depth[3])
+                    depth_image = depth_image.rotate(90, expand=True)
+                    depth_image = depth_image.transpose(Image.FLIP_TOP_BOTTOM)
+                    depth_image = depth_image.resize((640, 480))
+                    depth_image.save(storage_path + os.sep + "best_depth.jpg")
+                    d_width, d_height = depth_image.size
+                    # print(f'width x height: {d_width} x {d_height}')
+                    # print(f'best_match.shape: {best_match.shape}')
+                    # print(f'best_inliners.shape: {best_inliners}')
+                    # m = 0
+                    # for index in best_match:
+                    #   point = kp1[index[0]]
+                    #   print(f'the index in best_match: {index}')
+                    #   print(f'the point: {point}')
+                    #   print(f'(u, v): ({point[1]}, {point[0]})')
+                    #   print(f'camera (x,y,z,1): {camera_coords_list[m]}')
+                    #   print(f'world (x,y,z): {best_points3d[m]}')
+                    #   m = m + 1
+                    
+                    # for m in best_inliners:
+                    #   index = best_match[m]
+                    #   point = kp1[index[0]]
+                    #   print(f'the index in best_match: {m}')
+                    #   print(f'the point: {point}')
+                    #   print(f'(u, v): ({point[1]}, {point[0]})')
+                    #   print(f"depth: {depth_list[m]}")
+                    #   print(f'camera (x,y,z,1): {camera_coords_list[m]}')
+                    #   print(f'world (x,y,z): {best_points3d[m]}')
+                        
+                        
+                    dmatch13 = [cv2.DMatch(m[0], m[1], 0) for m in best_match[best_inliners]]
+                    # print(f'dmatch13: {dmatch13}')
+                    bkp1 = [cv2.KeyPoint(kp[0], kp[1], 1, -1, 0, 0, -1) for kp in best_keypoints[0]]
+                    bkp3 = [cv2.KeyPoint(kp[0], kp[1], 1, -1, 0, 0, -1) for kp in best_keypoints[1]]
+                    img_with_key13 = cv2.drawMatches(best_image_RGB[0], bkp1, best_image_RGB[1],
+                                                     bkp3, dmatch13, None)
+                    compression_params = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
+                    cv2.imwrite(os.path.join(resfolder,
                                                'match_' + os.path.basename(best_image_name[0]).split('.')[0] + qimname), img_with_key13, compression_params)
-                    else:
-                        positions[qimname] = default_P.tolist()
-                        print("all pose est failed")
+                    # else:
+                    #     positions[qimname] = default_P.tolist()
+                    #     print("all pose est failed")
             print(f'pnp time cost:{end - start}')
             print(f'total time cost:{end - start_init}')
 
@@ -615,9 +665,13 @@ def request_NVLAD_redir(request):
                     f'Loss rot radius:{(np.linalg.norm(rot_vec_p3) - np.linalg.norm(rot_vec_qim)) * 180. / np.pi}')
                 print(
                     f'Loss rot vec dir:{np.linalg.norm(rot_vec_p3 / np.linalg.norm(rot_vec_p3) - rot_vec_qim / np.linalg.norm(rot_vec_qim))}')
-
+          
         print(f'saved_path:{saved_images}')
         print(f'positions:{positions}')
+        print(f'pose: {best_P}')
+        print(f'pose: {P1}')
+        print(f'intrinsic: {best_K[0]}')
+        print(f"database path: {best_depth}")
         return JsonResponse({'message': 'Folder Found', 'saved_path': saved_images, 'positions': positions}, status=200)
 
     else:
