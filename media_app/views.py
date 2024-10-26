@@ -381,7 +381,8 @@ def request_NVLAD_redir(request):
                              os.path.join(depth_loc, simname.split('.')[0] + '.depth.jpg')))
 
         feature_extractor = SuperPoint(max_num_keypoints=2048).eval().to(settings.DEVICE)  # load the extractor
-        feature_match = LightGlue(features="superpoint").eval().to(settings.DEVICE)
+        # for maximize the accuracy, set depth_confidence=-1 and width_confidence=-1, which may reduce the speed
+        feature_match = LightGlue(features="superpoint", depth_confidence=-1, width_confidence=-1).eval().to(settings.DEVICE)
         distCoeffs = None
         useFilter = False
         filter_num = 100
@@ -392,14 +393,17 @@ def request_NVLAD_redir(request):
         H = 640
         est_focal = np.sqrt(W ** 2 + H ** 2) * 1428.643433 / 1440
         est_K = np.array([[est_focal, 0, W / 2.], [0, est_focal, H / 2.], [0, 0, 1]])
+        '''
+        在这之前使用Patch-NetVLAD进行相似图像匹配，得到一个相似图像列表pred_imgs，包含匹配到图像的路径信息
+        在这之后用LightGlue进行特征子提取，计算特征子对应的三维坐标，再利用PnPRANSAC进行pose计算
+        '''
         for qimname, v in pred_imgs.items():
             qim = os.path.join(tempimages, qimname)
             image3 = read_image(qim)
-            print(qim)
-            print(f"before image3 shape is : {image3.shape}")
+            # print(f"before image3 shape is : {image3.shape}")
             image3 = image_transform(image3)
             image3, _ = resize_image(image3, (H, W))
-            print(f'after images3-shape: {image3.shape}')
+            # print(f'after images3-shape: {image3.shape}')
             image3 = np.uint8(image3)
             img = Image.fromarray(image3)
             img.save(tempimages + '/image3.jpg', "JPEG")
@@ -441,7 +445,7 @@ def request_NVLAD_redir(request):
             init_traverse_windows = 30
             add_traverse_windows = 1.2
 
-            for i in range(0, len(v) - 1):
+            for i in range(0, len(v) - 1 if len(v) - 1 <= 30 else 30):
                 success = False
                 pose = None
                 traverse_windows = init_traverse_windows
@@ -491,6 +495,7 @@ def request_NVLAD_redir(request):
                     print("time out 3")
                     break
                   continue
+                print(f'before compute 3D coordinate, the matched points\' numbers between image1 and image3: {good_matches13.size}')
                 points3d, good_matches13, camera_coords_list, depth_list = pixel_to_world(kp1, good_matches13, v[i][3], K1, np.vstack((P1, np.array([0,0,0,1]))))
                 # print(f'image1 pose:{P1}')
                 # return JsonResponse({'message': 'test read P1'}, status=200)
@@ -500,8 +505,8 @@ def request_NVLAD_redir(request):
                 points3 = kp3[good_matches13[:, 1]].reshape(-1, 1, 2)
                 # N x 3
                 points3d = cv2.convertPointsFromHomogeneous(points3d).squeeze()
-                print(f'after cv2 point3 shape:{points3.shape}')
-                print(f'after cv2 point3d shape:{points3d.shape}')
+                # print(f'after compute 3D coordinate, the point3 shape:{points3.shape}')
+                # print(f'after compute 3D coordinate, the point3d shape:{points3d.shape}')
                 
                 if points3d.shape[0] >= 100:
                   rot_vec1, _ = cv2.Rodrigues(P1[:3, :3])
@@ -523,36 +528,34 @@ def request_NVLAD_redir(request):
                     pose = np.hstack((Rtmp, T))
                     print(f'after solvePnPRANSAC pose: {pose}')
                     residuals = ground_P3 - pose
+                    # TODO: need change this
                     if len(inliners) >= 100 and (
                             len(inliners) > (best_inliners_rate + best_inliners_rate_window) * len(points3) \
                             or (best_inliners_rate - best_inliners_rate_window) * len(points3) < len(inliners) \
                             and len(best_inliners) < len(inliners)) \
                             or len(best_inliners) < len(inliners) < 100 \
                             or os.path.exists(ground_truth) and np.linalg.norm(residuals) < min_residuals_norm:
-                      print('found best')
-                      best_inliners = inliners
-                      best_inliners_rate = float(len(inliners)) / float(len(points3))
-                      best_points2d = [points1, points3]
-                      best_points3d = points3d
-                      best_K = [K1, K3]
-                      best_depth = v[i]
-                      # Rtmp, _ = cv2.Rodrigues(R)
-                      # pose = np.hstack((Rtmp, T))
-                      best_P = [P1, pose]
-                      best_image_name = [sim1]
-                      best_keypoints = [kp1, kp3]
-                      best_image_RGB = [image1, image3]
-                      # best_match = matches123
-                      best_match = good_matches13
-                      # TODO: may change
-                      # is_stop = best_inliners_rate > stop_inliner_rate
-                      meet_best = True
-                      traverse_windows = init_traverse_windows if best_inliners_rate >= 0.2 else 0.8 * traverse_windows
-                      print('get best and break')
-                      break
+                      print('found good match result')
+                      if best_points3d is None or points3d.shape[0] > best_points3d.shape[0]:
+                        best_inliners = inliners
+                        best_inliners_rate = float(len(inliners)) / float(len(points3))
+                        best_points2d = [points1, points3]
+                        best_points3d = points3d
+                        best_K = [K1, K3]
+                        best_depth = v[i]
+                        # Rtmp, _ = cv2.Rodrigues(R)
+                        # pose = np.hstack((Rtmp, T))
+                        best_P = [P1, pose]
+                        best_image_name = [sim1]
+                        best_keypoints = [kp1, kp3]
+                        best_image_RGB = [image1, image3]
+                        # best_match = matches123
+                        best_match = good_matches13
+                        # is_stop = best_inliners_rate > stop_inliner_rate
+                        meet_best = True
+                        traverse_windows = init_traverse_windows if best_inliners_rate >= 0.2 else 0.8 * traverse_windows
                       if os.path.exists(ground_truth) and np.linalg.norm(residuals) < min_residuals_norm:
                         min_residuals_norm = np.linalg.norm(residuals)
-                        # TODO: may change
                         # is_stop = min_residuals_norm < stop_residuals_norm
                     elif len(inliners) < 0.2 * len(points3):
                             # print('too less inliners')
@@ -655,7 +658,6 @@ def request_NVLAD_redir(request):
                         
                         
                     dmatch13 = [cv2.DMatch(m[0], m[1], 0) for m in best_match[best_inliners]]
-                    # print(f'dmatch13: {dmatch13}')
                     bkp1 = [cv2.KeyPoint(kp[0], kp[1], 1, -1, 0, 0, -1) for kp in best_keypoints[0]]
                     bkp3 = [cv2.KeyPoint(kp[0], kp[1], 1, -1, 0, 0, -1) for kp in best_keypoints[1]]
                     img_with_key13 = cv2.drawMatches(best_image_RGB[0], bkp1, best_image_RGB[1],
@@ -663,6 +665,13 @@ def request_NVLAD_redir(request):
                     compression_params = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
                     cv2.imwrite(os.path.join(resfolder,
                                                'match_' + os.path.basename(best_image_name[0]).split('.')[0] + qimname), img_with_key13, compression_params)
+                    result_txt = os.path.join(resfolder, 'result.txt')
+                    # add some output info to result.txt
+                    with open(result_txt, 'w') as f:
+                        f.write(f'find the best image match point3d shape:{best_points3d.shape}\n')
+                        f.write(f'final best match image pose:\n{best_P[0]}\n')
+                        f.write(f'final redirect image pose:\n{best_P[1]}\n')
+
                     # else:
                     #     positions[qimname] = default_P.tolist()
                     #     print("all pose est failed")
@@ -682,14 +691,6 @@ def request_NVLAD_redir(request):
                     f'Loss rot radius:{(np.linalg.norm(rot_vec_p3) - np.linalg.norm(rot_vec_qim)) * 180. / np.pi}')
                 print(
                     f'Loss rot vec dir:{np.linalg.norm(rot_vec_p3 / np.linalg.norm(rot_vec_p3) - rot_vec_qim / np.linalg.norm(rot_vec_qim))}')
-          
-        print(f'saved_path:{saved_images}')
-        print(f'positions:{positions}')
-        print(f'final pose 1: {best_P[0]}')
-        print(f'final pose 3: {best_P[1]}')
-        # print(f'pose: {P1}')
-        # print(f'intrinsic: {best_K[0]}')
-        # print(f"database path: {best_depth}")
         return JsonResponse({'message': 'Folder Found', 'saved_path': saved_images, 'positions': positions}, status=200)
 
     else:
