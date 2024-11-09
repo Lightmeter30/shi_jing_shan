@@ -194,9 +194,9 @@ K: 相机内参 3x3
 P: 相机位姿4x4
 return point3D Nx4(齐次坐标)
 '''
-def pixel_to_world(points: numpy, matchs: numpy,depth, K: numpy, P: numpy):
+def pixel_to_world(points: numpy, matchs: numpy, depth, K: numpy, P: numpy, depth_setting):
   # TODO: may change
-  Z_Near, Z_Far = 0.5, 8
+  Z_Near, Z_Far = depth_setting[0], depth_setting[1]
   # K变换单位
   points3D = []
   camera_coords_list = []
@@ -206,8 +206,6 @@ def pixel_to_world(points: numpy, matchs: numpy,depth, K: numpy, P: numpy):
   depth_image = Image.open(depth)
   if depth_image is None:
     raise ValueError('Could not read the depth image.')
-  # depth_image = depth_image.rotate(90, expand=True)
-  # depth_image = depth_image.transpose(Image.FLIP_TOP_BOTTOM)
   depth_image = depth_image.resize((480, 640))
   # print(f"Depth image shape: {depth_image.size}")
   
@@ -218,28 +216,21 @@ def pixel_to_world(points: numpy, matchs: numpy,depth, K: numpy, P: numpy):
   for match in matchs:
     # TODO: may change将像素坐标转化为相机坐标 
     point = points[match[0]]
-    # print(f'(x, y): ({point[1]}, {point[0]})')
     depth_temp = depth_image.getpixel((point[0], point[1]))[0]
-    # depth_temp = Z_Near + (depth_image.getpixel((point[1], point[0]))[0] / 255) * ()
     if depth_temp != 255 and depth_temp != 0:
       matchs_new.append(match)
       depth_final = Z_Near + (depth_temp / 255) * (Z_Far - Z_Near)
       depth_list.append(depth_final)
-      # print(f'depth output: {depth_final}')
       x = (point[0] - K[0,2]) * depth_final / K[0, 0]
       y = (point[1] - K[1,2]) * depth_final / K[1, 1]
       z = depth_final
       camera_coords = np.array([x, y, z, 1])
       camera_coords_list.append(camera_coords)
     else:
-      # print(f'illegal depth: {depth_temp}')
       continue
     world_coords = P_inv @ camera_coords.T
-    # print(f"world_coords: {world_coords}")
-    # print(f"u, v: {point[1]} {point[0]}")
-    # break
     points3D.append(world_coords)
-  print(f'3d+match{np.array(points3D).shape}, {np.array(matchs_new).shape}')
+  print(f'the number of feature points which have a legal depth: {np.array(points3D).shape}')
   return [np.array(points3D), np.array(matchs_new), np.array(camera_coords_list), np.array(depth_list)]
 
 @csrf_exempt
@@ -298,6 +289,9 @@ def request_NVLAD_redir(request):
         tempfeature = os.path.join(tempfolder, 'query_features')
         tempimages = os.path.join(tempfolder, 'query_folder')
         tempquery = os.path.join(tempfolder, 'query.txt')
+        depth_info = os.path.join(depth_loc, 'depth.txt')
+        with open(depth_info, 'r') as f:
+            depth_setting = [float(num) for num in f.read().split()]
         if not os.path.exists(tempfolder):
             os.makedirs(tempfolder)
             os.makedirs(tempfeature)
@@ -393,6 +387,7 @@ def request_NVLAD_redir(request):
         H = 640
         est_focal = np.sqrt(W ** 2 + H ** 2) * 1428.643433 / 1440
         est_K = np.array([[est_focal, 0, W / 2.], [0, est_focal, H / 2.], [0, 0, 1]])
+        # est_K = np.array([[480.33677851, 0, 320.84203781], [0, 479.82289098, 236.27875224], [0, 0, 1]])
         '''
         在这之前使用Patch-NetVLAD进行相似图像匹配，得到一个相似图像列表pred_imgs，包含匹配到图像的路径信息
         在这之后用LightGlue进行特征子提取，计算特征子对应的三维坐标，再利用PnPRANSAC进行pose计算
@@ -444,8 +439,8 @@ def request_NVLAD_redir(request):
             min_traverse_windows = 10
             init_traverse_windows = 30
             add_traverse_windows = 1.2
-
-            for i in range(0, len(v) - 1 if len(v) - 1 <= 30 else 30):
+            # TODO: test change
+            for i in range(0, len(v) - 1 if len(v) - 1 <= 5 else 5):
                 success = False
                 pose = None
                 traverse_windows = init_traverse_windows
@@ -486,17 +481,16 @@ def request_NVLAD_redir(request):
                     m13, num13 = getInliners(kp1, kp3, good_matches13, K1, K3, **filter_params)
                     if num13 > filter_num:
                         good_matches13 = np.array(m13)
-                
+
                 # 根据13匹配点集计算
-                if good_matches13.size < 10:
+                if good_matches13.size <= 400:
                   print("common points too low, pose est failed!")
                   end = time.time()
                   if end - start_init > timeout:
                     print("time out 3")
                     break
                   continue
-                print(f'before compute 3D coordinate, the matched points\' numbers between image1 and image3: {good_matches13.size}')
-                points3d, good_matches13, camera_coords_list, depth_list = pixel_to_world(kp1, good_matches13, v[i][3], K1, np.vstack((P1, np.array([0,0,0,1]))))
+                points3d, good_matches13, camera_coords_list, depth_list = pixel_to_world(kp1, good_matches13, v[i][3], K1, np.vstack((P1, np.array([0,0,0,1]))), depth_setting)
                 # print(f'image1 pose:{P1}')
                 # return JsonResponse({'message': 'test read P1'}, status=200)
                 if good_matches13.shape[0] == 0:
@@ -505,21 +499,21 @@ def request_NVLAD_redir(request):
                 points3 = kp3[good_matches13[:, 1]].reshape(-1, 1, 2)
                 # N x 3
                 points3d = cv2.convertPointsFromHomogeneous(points3d).squeeze()
-                # print(f'after compute 3D coordinate, the point3 shape:{points3.shape}')
-                # print(f'after compute 3D coordinate, the point3d shape:{points3d.shape}')
                 
-                if points3d.shape[0] >= 100:
+                if points3d.shape[0] >= 250:
                   rot_vec1, _ = cv2.Rodrigues(P1[:3, :3])
                   shift1 = P1[:3, 3:]
-                  # print(f'before solvePnPRansac R:{rot_vec1}')
-                  # print(f'before solvePnPRansac T: {shift1}')
+                  # print(f'before solvePnPRansac rot_vec1:{rot_vec1}')
+                  # print(f'before solvePnPRansac shift1: {shift1}')
                   success, R, T, inliners = cv2.solvePnPRansac(points3d, points3, K3, distCoeffs,
                                                                useExtrinsicGuess=True, rvec=rot_vec1,
                                                                tvec=shift1)
-                  # print(f'after solvePnPRansac R:{R}')
-                  # print(f'after solvePnPRansac T: {T}')
+                  print(f'after solvePnPRansac rot_vec1:{rot_vec1}')
+                  print(f'after solvePnPRansac R:{R}')
+                  print(f'after solvePnPRansac shift1: {shift1}')
+                  print(f'after solvePnPRansac T: {T}')
+                  print(f'solvePnPRansac inliners numbers: {len(inliners)}')
                   # print(f'after solvePnPRansac image1 pose:{P1}')
-                  # print(f'K3: {K3}')
                   # return JsonResponse({'message': 'test read P1'}, status=200)
                   if success and inliners is not None:
                     inliners = inliners.squeeze()
@@ -558,7 +552,7 @@ def request_NVLAD_redir(request):
                         min_residuals_norm = np.linalg.norm(residuals)
                         # is_stop = min_residuals_norm < stop_residuals_norm
                     elif len(inliners) < 0.2 * len(points3):
-                            # print('too less inliners')
+                            print('too less inliners')
                             traverse_windows *= 0.95 if meet_best else 0.5
                     else:
                       traverse_windows *= 0.97 if meet_best else 0.8
@@ -607,26 +601,29 @@ def request_NVLAD_redir(request):
             if end - start_init > timeout:
               print('best_ratio failed')
             if best_P is not None:
-                # print(f'best inliner num:{len(best_inliners)}')
-                # print(f'points3d num:{len(best_points3d)}')
-                # useRANSAC = False
-                # tmp_inliners = best_inliners if len(best_inliners) > 20 else np.arange(len(best_points3d))
-                # # RANSAC pnp
-                # rot_vec1, _ = cv2.Rodrigues(best_P[0][:3, :3])
-                # shift1 = best_P[0][:3, 3:]
+                print(f'best inliner num:{len(best_inliners)}')
+                print(f'points3d num:{len(best_points3d)}')
+                # RANSAC pnp
+                rot_vec1, _ = cv2.Rodrigues(best_P[0][:3, :3])
+                shift1 = best_P[0][:3, 3:]
                 # print(f'before solvePnP image1 pose: {P1}')
                 # print(f'before solvePnP R0: {rot_vec1}')
                 # print(f'before solvePnP T0: {shift1}')
-                # success0, R0, T0 = cv2.solvePnP(best_points3d, best_points2d[1].squeeze(), K3, distCoeffs,
-                #                                             useExtrinsicGuess=True, rvec=rot_vec1, tvec=shift1)
+                # print(f'best_inliners:\n {best_inliners}')
+                inliners_3D = best_points3d[best_inliners]
+                inliners_2D =  best_points2d[1][best_inliners].squeeze()
+                success0, R0, T0 = cv2.solvePnP(inliners_3D ,inliners_2D, K3, distCoeffs,
+                                                            useExtrinsicGuess=True, rvec=rot_vec1, tvec=shift1)
                 # print(f'after solvePnP R0:{R0}')
                 # print(f'after solvePnP T0: {T0}')
                 # print(f'after solvePnP image1 pose: {P1}')
 
-                # if success0:
-                # best_P[1] = pose
-                # print(f'after solvePnP pose: {pose}')
-                positions[qimname] = best_P[1].tolist()
+                if success0:
+                    Rtmp, _ = cv2.Rodrigues(R0)
+                    pose = np.hstack((Rtmp, T0))
+                    best_P[1] = pose
+                    print(f'after solvePnP pose: {pose}')
+                    positions[qimname] = best_P[1].tolist()
                 if drawMatch:
                     print(f'best_depth: {best_depth}')
                     depth_image = Image.open(best_depth[3])
@@ -672,9 +669,9 @@ def request_NVLAD_redir(request):
                         f.write(f'final best match image pose:\n{best_P[0]}\n')
                         f.write(f'final redirect image pose:\n{best_P[1]}\n')
 
-                    # else:
-                    #     positions[qimname] = default_P.tolist()
-                    #     print("all pose est failed")
+            else:
+                positions[qimname] = default_P.tolist()
+                print("all pose est failed")
             print(f'pnp time cost:{end - start}')
             print(f'total time cost:{end - start_init}')
 
