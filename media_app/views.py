@@ -22,6 +22,7 @@ from lightglue import LightGlue, SuperPoint, DISK
 from lightglue.utils import load_image, rbd, read_image, numpy_image_to_torch, resize_image
 from lightglue import viz2d
 import torch
+import copy
 
 
 def upload_video(request):
@@ -374,10 +375,11 @@ def request_NVLAD_redir(request):
                              os.path.join(exter_loc, simname.split('.')[0] + '.pose.txt'),
                              os.path.join(depth_loc, simname.split('.')[0] + '.depth.jpg')))
 
-        feature_extractor = SuperPoint(max_num_keypoints=2048).eval().to(settings.DEVICE)  # load the extractor
+        feature_extractor = DISK(max_num_keypoints=2048).eval().to(settings.DEVICE)  # load the extractor
         # for maximize the accuracy, set depth_confidence=-1 and width_confidence=-1, which may reduce the speed
-        feature_match = LightGlue(features="superpoint", depth_confidence=-1, width_confidence=-1).eval().to(settings.DEVICE)
+        feature_match = LightGlue(features="disk", depth_confidence=-1, width_confidence=-1).eval().to(settings.DEVICE)
         distCoeffs = None
+        # distCoeffs = np.array([0.19021763, -0.59237872, -0.00189399, -0.00129089, 0.39855042])
         useFilter = False
         filter_num = 100
         filter_params = {'distCoeffs1': None, 'distCoeffs2': None, 'threshold': 8., 'prob': 0.99, 'no_intrinsic': True}
@@ -402,12 +404,6 @@ def request_NVLAD_redir(request):
             image3 = np.uint8(image3)
             img = Image.fromarray(image3)
             img.save(tempimages + '/image3.jpg', "JPEG")
-            # TODO: may change
-            # fs = FileSystemStorage('/home/takune/relocation/shi_jing_shan/media/images/sjs1009/depth/')
-            # saved_image = fs.save('test.jpg', image3)
-            
-            # return JsonResponse({'success': 'test_image_ok'}, status=200)
-            # image3 = cv2.resize(image3, (W, H))
             K3 = est_K
             # K3 = np.array([[968.857117, 0, 240.0], [0, 1337.749634, 320], [0, 0, 1]])
             # print(f'image3 intrinsic:{K3}')
@@ -440,7 +436,7 @@ def request_NVLAD_redir(request):
             init_traverse_windows = 30
             add_traverse_windows = 1.2
             # TODO: test change
-            for i in range(0, len(v) - 1 if len(v) - 1 <= 5 else 5):
+            for i in range(0, len(v) - 1 if len(v) - 1 <= 20 else 20):
                 success = False
                 pose = None
                 traverse_windows = init_traverse_windows
@@ -458,7 +454,11 @@ def request_NVLAD_redir(request):
                 # image1 = cv2.resize(image1, (W, H))
                 # TODO: may change print(f'K1: {read_pose_3dscanner(v[i][1])[:, :-1]}')
                 # K1 = read_pose_3dscanner(v[i][1])[:, :-1] if os.path.exists(v[i][1]) else est_K
-                # K1 = np.array([[968.857117, 0, 240.0], [0, 1337.749634, 320], [0, 0, 1]])
+                # K1[0, 0] *= 1/3
+                # K1[1, 1] *= 1/3
+                # K1[0, 2] *= 1/3
+                # K1[1, 2] *= 1/3
+                # print("the intrinsic of image1 K1:\n", K1)
                 K1 = K3
                 # K1 = K1 / 1000
                 # K1 = est_K
@@ -500,19 +500,19 @@ def request_NVLAD_redir(request):
                 # N x 3
                 points3d = cv2.convertPointsFromHomogeneous(points3d).squeeze()
                 
-                if points3d.shape[0] >= 250:
+                if points3d.shape[0] >= 200:
                   rot_vec1, _ = cv2.Rodrigues(P1[:3, :3])
-                  shift1 = P1[:3, 3:]
+                  shift1 = copy.deepcopy(P1[:3, 3:])
                   # print(f'before solvePnPRansac rot_vec1:{rot_vec1}')
                   # print(f'before solvePnPRansac shift1: {shift1}')
                   success, R, T, inliners = cv2.solvePnPRansac(points3d, points3, K3, distCoeffs,
                                                                useExtrinsicGuess=True, rvec=rot_vec1,
                                                                tvec=shift1)
-                  print(f'after solvePnPRansac rot_vec1:{rot_vec1}')
-                  print(f'after solvePnPRansac R:{R}')
-                  print(f'after solvePnPRansac shift1: {shift1}')
-                  print(f'after solvePnPRansac T: {T}')
-                  print(f'solvePnPRansac inliners numbers: {len(inliners)}')
+                  # print(f'after solvePnPRansac rot_vec1:{rot_vec1}')
+                  # print(f'after solvePnPRansac R:{R}')
+                  # print(f'after solvePnPRansac shift1: {shift1}')
+                  # print(f'after solvePnPRansac T: {T}')
+                  # print(f'solvePnPRansac inliners numbers: {len(inliners)}')
                   # print(f'after solvePnPRansac image1 pose:{P1}')
                   # return JsonResponse({'message': 'test read P1'}, status=200)
                   if success and inliners is not None:
@@ -605,7 +605,7 @@ def request_NVLAD_redir(request):
                 print(f'points3d num:{len(best_points3d)}')
                 # RANSAC pnp
                 rot_vec1, _ = cv2.Rodrigues(best_P[0][:3, :3])
-                shift1 = best_P[0][:3, 3:]
+                shift1 = copy.deepcopy(best_P[0][:3, 3:])
                 # print(f'before solvePnP image1 pose: {P1}')
                 # print(f'before solvePnP R0: {rot_vec1}')
                 # print(f'before solvePnP T0: {shift1}')
