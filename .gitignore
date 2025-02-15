@@ -3,3 +3,4 @@
 *.webp
 **/__pycache__
 /media
+/accelerated_features

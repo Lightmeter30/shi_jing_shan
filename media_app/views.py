@@ -11,6 +11,7 @@ from .models import Image, Video
 from .forms import VideoForm, ImageForm
 from utils.upload import new_name, new_dir_name
 from utils.calib3d import *
+from utils.draw import *
 from datetime import datetime
 import os, re
 import subprocess
@@ -18,12 +19,12 @@ import numpy as np
 import cv2, numpy
 import time
 from PIL import Image
-from lightglue import LightGlue, SuperPoint, DISK
-from lightglue.utils import load_image, rbd, read_image, numpy_image_to_torch, resize_image
-from lightglue import viz2d
+from lightglue.utils import read_image, resize_image
 import torch
 import copy
 
+from accelerated_features.modules.xfeat import XFeat
+# from accelerated_features.modules.xfeat import XFeat
 
 def upload_video(request):
     if request.method == 'POST':
@@ -188,21 +189,21 @@ def image_transform(image: numpy):
     return rotated_image
 
 '''
-points: image1所有的特征点集合, 是一个shape为N1 x 2的数组
+points: image1所有的特征点集合(pixel坐标), 是一个shape为N1 x 2的数组
 matchs: image1和image3的特征点匹配对, 是一个N2 x 2的数组, 其中match[0]为image1的index, match[1]时image3的index
 depth: 深度图路径字符串
 K: 相机内参 3x3
 P: 相机位姿4x4
 return point3D Nx4(齐次坐标)
 '''
-def pixel_to_world(points: numpy, matchs: numpy, depth, K: numpy, P: numpy, depth_setting):
+def pixel_to_world(points: numpy, depth, K: numpy, P: numpy, depth_setting):
   # TODO: may change
   Z_Near, Z_Far = depth_setting[0], depth_setting[1]
   # K变换单位
   points3D = []
   camera_coords_list = []
-  matchs_new = []
   depth_list = []
+  remove_index_list = []
   # TODO: may change
   depth_image = Image.open(depth)
   if depth_image is None:
@@ -214,12 +215,10 @@ def pixel_to_world(points: numpy, matchs: numpy, depth, K: numpy, P: numpy, dept
   points = np.hstack((points, np.ones((points.shape[0], 1))))
   # 计算相机位姿矩阵的逆矩阵
   P_inv = np.linalg.inv(P)
-  for match in matchs:
+  for index, point in enumerate(points):
     # TODO: may change将像素坐标转化为相机坐标 
-    point = points[match[0]]
     depth_temp = depth_image.getpixel((point[0], point[1]))[0]
     if depth_temp != 255 and depth_temp != 0:
-      matchs_new.append(match)
       depth_final = Z_Near + (depth_temp / 255) * (Z_Far - Z_Near)
       depth_list.append(depth_final)
       x = (point[0] - K[0,2]) * depth_final / K[0, 0]
@@ -228,11 +227,12 @@ def pixel_to_world(points: numpy, matchs: numpy, depth, K: numpy, P: numpy, dept
       camera_coords = np.array([x, y, z, 1])
       camera_coords_list.append(camera_coords)
     else:
+      remove_index_list.append(index)
       continue
     world_coords = P_inv @ camera_coords.T
     points3D.append(world_coords)
   print(f'the number of feature points which have a legal depth: {np.array(points3D).shape}')
-  return [np.array(points3D), np.array(matchs_new), np.array(camera_coords_list), np.array(depth_list)]
+  return [np.array(points3D), remove_index_list, np.array(camera_coords_list), np.array(depth_list)]
 
 @csrf_exempt
 def test_read_image(request):
@@ -374,10 +374,6 @@ def request_NVLAD_redir(request):
                             (ims[1], os.path.join(intri_loc, simname.split('.')[0] + '.intrinsic_color.txt'),
                              os.path.join(exter_loc, simname.split('.')[0] + '.pose.txt'),
                              os.path.join(depth_loc, simname.split('.')[0] + '.depth.jpg')))
-
-        feature_extractor = DISK(max_num_keypoints=2048).eval().to(settings.DEVICE)  # load the extractor
-        # for maximize the accuracy, set depth_confidence=-1 and width_confidence=-1, which may reduce the speed
-        feature_match = LightGlue(features="disk", depth_confidence=-1, width_confidence=-1).eval().to(settings.DEVICE)
         distCoeffs = None
         # distCoeffs = np.array([0.19021763, -0.59237872, -0.00189399, -0.00129089, 0.39855042])
         useFilter = False
@@ -468,44 +464,45 @@ def request_NVLAD_redir(request):
                 # print(f'image1 pose:{P1}')
                 
 
-                feats1 = feature_extractor.extract(numpy_image_to_torch(image1).to(settings.DEVICE))
-                feats1out = rbd(feats1)
-                kp1 = feats1out['keypoints'].cpu().numpy()
-                feats3 = feature_extractor.extract(numpy_image_to_torch(image3).to(settings.DEVICE))
-                feats3out = rbd(feats3)
-                kp3 = feats3out['keypoints'].cpu().numpy()
-                matches13 = feature_match({"image0": feats1, "image1": feats3})
-                matches13out = rbd(matches13)
-                good_matches13 = matches13out['matches'].cpu().numpy()
-                if useFilter:
-                    m13, num13 = getInliners(kp1, kp3, good_matches13, K1, K3, **filter_params)
-                    if num13 > filter_num:
-                        good_matches13 = np.array(m13)
-
+                # feats1 = feature_extractor.extract(numpy_image_to_torch(image1).to(settings.DEVICE))
+                # feats1out = rbd(feats1)
+                # kp1 = feats1out['keypoints'].cpu().numpy()
+                # feats3 = feature_extractor.extract(numpy_image_to_torch(image3).to(settings.DEVICE))
+                # feats3out = rbd(feats3)
+                # kp3 = feats3out['keypoints'].cpu().numpy()
+                # matches13 = feature_match({"image0": feats1, "image1": feats3})
+                # matches13out = rbd(matches13)
+                # good_matches13 = matches13out['matches'].cpu().numpy()
+                
+                # if useFilter:
+                #     m13, num13 = getInliners(kp1, kp3, good_matches13, K1, K3, **filter_params)
+                #     if num13 > filter_num:
+                #         good_matches13 = np.array(m13)
+                xfeat = XFeat()
+                kpoints1, kpoints3 = xfeat.match_xfeat_star(image1, image3, top_k=6000)
+                
                 # 根据13匹配点集计算
-                if good_matches13.size <= 400:
+                if kpoints1.shape[0] <= 400:
                   print("common points too low, pose est failed!")
                   end = time.time()
                   if end - start_init > timeout:
                     print("time out 3")
                     break
                   continue
-                points3d, good_matches13, camera_coords_list, depth_list = pixel_to_world(kp1, good_matches13, v[i][3], K1, np.vstack((P1, np.array([0,0,0,1]))), depth_setting)
+                points3d, remove_list ,camera_coords_list, depth_list = pixel_to_world(kpoints1, v[i][3], K1, np.vstack((P1, np.array([0,0,0,1]))), depth_setting)
+                kpoints1 = np.delete(kpoints1, remove_list, axis=0)
+                kpoints3 = np.delete(kpoints3, remove_list, axis=0)
                 # print(f'image1 pose:{P1}')
                 # return JsonResponse({'message': 'test read P1'}, status=200)
-                if good_matches13.shape[0] == 0:
-                  continue
-                points1 = kp1[good_matches13[:, 0]].reshape(-1, 1, 2)
-                points3 = kp3[good_matches13[:, 1]].reshape(-1, 1, 2)
                 # N x 3
                 points3d = cv2.convertPointsFromHomogeneous(points3d).squeeze()
                 
                 if points3d.shape[0] >= 200:
                   rot_vec1, _ = cv2.Rodrigues(P1[:3, :3])
                   shift1 = copy.deepcopy(P1[:3, 3:])
-                  # print(f'before solvePnPRansac rot_vec1:{rot_vec1}')
-                  # print(f'before solvePnPRansac shift1: {shift1}')
-                  success, R, T, inliners = cv2.solvePnPRansac(points3d, points3, K3, distCoeffs,
+                  print(f'before solvePnPRansac points3d:{points3d.shape}, {type(points3d)}')
+                  print(f'before solvePnPRansac kpoints3: {kpoints3.shape}, {type(kpoints3)}')
+                  success, R, T, inliners = cv2.solvePnPRansac(points3d, kpoints3, K3, distCoeffs,
                                                                useExtrinsicGuess=True, rvec=rot_vec1,
                                                                tvec=shift1)
                   # print(f'after solvePnPRansac rot_vec1:{rot_vec1}')
@@ -524,16 +521,16 @@ def request_NVLAD_redir(request):
                     residuals = ground_P3 - pose
                     # TODO: need change this
                     if len(inliners) >= 100 and (
-                            len(inliners) > (best_inliners_rate + best_inliners_rate_window) * len(points3) \
-                            or (best_inliners_rate - best_inliners_rate_window) * len(points3) < len(inliners) \
+                            len(inliners) > (best_inliners_rate + best_inliners_rate_window) * len(kpoints3) \
+                            or (best_inliners_rate - best_inliners_rate_window) * len(kpoints3) < len(inliners) \
                             and len(best_inliners) < len(inliners)) \
                             or len(best_inliners) < len(inliners) < 100 \
                             or os.path.exists(ground_truth) and np.linalg.norm(residuals) < min_residuals_norm:
                       print('found good match result')
                       if best_points3d is None or points3d.shape[0] > best_points3d.shape[0]:
                         best_inliners = inliners
-                        best_inliners_rate = float(len(inliners)) / float(len(points3))
-                        best_points2d = [points1, points3]
+                        best_inliners_rate = float(len(inliners)) / float(len(kpoints3))
+                        best_points2d = [kpoints1, kpoints3]
                         best_points3d = points3d
                         best_K = [K1, K3]
                         best_depth = v[i]
@@ -541,17 +538,16 @@ def request_NVLAD_redir(request):
                         # pose = np.hstack((Rtmp, T))
                         best_P = [P1, pose]
                         best_image_name = [sim1]
-                        best_keypoints = [kp1, kp3]
+                        best_keypoints = [kpoints1, kpoints3]
                         best_image_RGB = [image1, image3]
                         # best_match = matches123
-                        best_match = good_matches13
                         # is_stop = best_inliners_rate > stop_inliner_rate
                         meet_best = True
                         traverse_windows = init_traverse_windows if best_inliners_rate >= 0.2 else 0.8 * traverse_windows
                       if os.path.exists(ground_truth) and np.linalg.norm(residuals) < min_residuals_norm:
                         min_residuals_norm = np.linalg.norm(residuals)
                         # is_stop = min_residuals_norm < stop_residuals_norm
-                    elif len(inliners) < 0.2 * len(points3):
+                    elif len(inliners) < 0.2 * len(kpoints3):
                             print('too less inliners')
                             traverse_windows *= 0.95 if meet_best else 0.5
                     else:
@@ -654,14 +650,15 @@ def request_NVLAD_redir(request):
                     #   print(f'world (x,y,z): {best_points3d[m]}')
                         
                         
-                    dmatch13 = [cv2.DMatch(m[0], m[1], 0) for m in best_match[best_inliners]]
-                    bkp1 = [cv2.KeyPoint(kp[0], kp[1], 1, -1, 0, 0, -1) for kp in best_keypoints[0]]
-                    bkp3 = [cv2.KeyPoint(kp[0], kp[1], 1, -1, 0, 0, -1) for kp in best_keypoints[1]]
-                    img_with_key13 = cv2.drawMatches(best_image_RGB[0], bkp1, best_image_RGB[1],
-                                                     bkp3, dmatch13, None)
+                    # dmatch13 = [cv2.DMatch(m[0], m[1], 0) for m in best_match[best_inliners]]
+                    # bkp1 = [cv2.KeyPoint(kp[0], kp[1], 1, -1, 0, 0, -1) for kp in best_keypoints[0]]
+                    # bkp3 = [cv2.KeyPoint(kp[0], kp[1], 1, -1, 0, 0, -1) for kp in best_keypoints[1]]
+                    # img_with_key13 = cv2.drawMatches(best_image_RGB[0], bkp1, best_image_RGB[1],
+                    #                                  bkp3, dmatch13, None)
+                    canvas = warp_corners_and_draw_matches(best_keypoints[0], best_keypoints[1], best_image_RGB[0], best_image_RGB[1])
                     compression_params = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
                     cv2.imwrite(os.path.join(resfolder,
-                                               'match_' + os.path.basename(best_image_name[0]).split('.')[0] + qimname), img_with_key13, compression_params)
+                                               'match_' + os.path.basename(best_image_name[0]).split('.')[0] + qimname), canvas, compression_params)
                     result_txt = os.path.join(resfolder, 'result.txt')
                     # add some output info to result.txt
                     with open(result_txt, 'w') as f:
