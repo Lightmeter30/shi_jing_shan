@@ -197,42 +197,52 @@ P: 相机位姿4x4
 return point3D Nx4(齐次坐标)
 '''
 def pixel_to_world(points: numpy, depth, K: numpy, P: numpy, depth_setting):
-  # TODO: may change
-  Z_Near, Z_Far = depth_setting[0], depth_setting[1]
-  # K变换单位
-  points3D = []
-  camera_coords_list = []
-  depth_list = []
-  remove_index_list = []
-  # TODO: may change
-  depth_image = Image.open(depth)
-  if depth_image is None:
-    raise ValueError('Could not read the depth image.')
-  depth_image = depth_image.resize((480, 640))
-  # print(f"Depth image shape: {depth_image.size}")
-  
-  # 构造齐次像素坐标Nx3
-  points = np.hstack((points, np.ones((points.shape[0], 1))))
-  # 计算相机位姿矩阵的逆矩阵
-  P_inv = np.linalg.inv(P)
-  for index, point in enumerate(points):
-    # TODO: may change将像素坐标转化为相机坐标 
-    depth_temp = depth_image.getpixel((point[0], point[1]))[0]
-    if depth_temp != 255 and depth_temp != 0:
-      depth_final = Z_Near + (depth_temp / 255) * (Z_Far - Z_Near)
-      depth_list.append(depth_final)
-      x = (point[0] - K[0,2]) * depth_final / K[0, 0]
-      y = (point[1] - K[1,2]) * depth_final / K[1, 1]
-      z = depth_final
-      camera_coords = np.array([x, y, z, 1])
-      camera_coords_list.append(camera_coords)
-    else:
-      remove_index_list.append(index)
-      continue
-    world_coords = P_inv @ camera_coords.T
-    points3D.append(world_coords)
-  print(f'the number of feature points which have a legal depth: {np.array(points3D).shape}')
-  return [np.array(points3D), remove_index_list, np.array(camera_coords_list), np.array(depth_list)]
+    Z_Near, Z_Far = depth_setting[0], depth_setting[1]
+    
+    # 1. 读取深度图
+    depth_image = Image.open(depth)
+    if depth_image is None:
+        raise ValueError('Could not read the depth image.')
+    depth_image = depth_image.resize((480, 640))
+    
+    # 2. 设置相机内参
+    f_x, f_y, c_x, c_y = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+    
+    # 3. 构造齐次像素坐标 Nx3
+    points_homo = np.hstack((points, np.ones((points.shape[0], 1))))
+    
+    # 4. 计算相机位姿矩阵的逆矩阵
+    P_inv = np.linalg.inv(P)
+    
+    # 5. 批量读取深度值
+    depth_values = np.array([depth_image.getpixel((int(p[0]), int(p[1])))[0] for p in points])
+    
+    # 6. 计算有效掩码
+    valid_mask = (depth_values != 255) & (depth_values != 0)
+    
+    # 7. 计算深度值
+    depths = Z_Near + (depth_values[valid_mask] / 255) * (Z_Far - Z_Near)
+    
+    # 8. 获取有效点
+    points_valid = points[valid_mask]
+    
+    # 9. 批量计算相机坐标
+    camera_coords = np.zeros((len(points_valid), 4))
+    camera_coords[:, 0] = (points_valid[:, 0] - c_x) * depths / f_x
+    camera_coords[:, 1] = (points_valid[:, 1] - c_y) * depths / f_y
+    camera_coords[:, 2] = depths
+    camera_coords[:, 3] = 1
+    
+    # 10. 转换到世界坐标
+    world_coords = (P_inv @ camera_coords.T).T
+    
+    # 11. 记录被移除点的索引
+    remove_index_list = np.where(~valid_mask)[0].tolist()
+    
+    print(f'the number of feature points which have a legal depth: {len(world_coords)}')
+    
+    return [world_coords, remove_index_list, camera_coords, depths]
+
 
 @csrf_exempt
 def test_read_image(request):
@@ -256,16 +266,6 @@ def test_read_image(request):
 
 @csrf_exempt
 def request_NVLAD_redir(request):
-    # saved_images = ['/media/vr717/image.jpg']
-    # positions = {
-    #     'image.jpg': [
-    #         [0.022384, 0.993749, 0.109367, 2.965258],
-    #         [-0.998496, 0.016746, 0.052199, -0.169641],
-    #         [0.050041, -0.110371, 0.992630, 2.639569],
-    #         ]
-    # }
-    # [0.000000, 0.000000, 0.000000, 1.000000]
-    # return JsonResponse({'message': 'Folder Found', 'saved_path': saved_images, 'positions': positions}, status=200)
     start_init = time.time()
     img_loc = request.GET.get('source_location', 'temps/')
     img_loc = os.path.join(img_loc, 'color')
@@ -368,12 +368,14 @@ def request_NVLAD_redir(request):
                         pred_imgs[qimname] = [
                             (ims[1], os.path.join(intri_loc, simname.split('.')[0] + '.intrinsic_color.txt'),
                              os.path.join(exter_loc, simname.split('.')[0] + '.pose.txt'),
-                             os.path.join(depth_loc, simname.split('.')[0] + '.depth.jpg'))]
+                             os.path.join(depth_loc, simname.split('.')[0] + '.depth.jpg'),
+                             simname.split('.')[0])]
                     else:
                         pred_imgs[qimname].append(
                             (ims[1], os.path.join(intri_loc, simname.split('.')[0] + '.intrinsic_color.txt'),
                              os.path.join(exter_loc, simname.split('.')[0] + '.pose.txt'),
-                             os.path.join(depth_loc, simname.split('.')[0] + '.depth.jpg')))
+                             os.path.join(depth_loc, simname.split('.')[0] + '.depth.jpg'),
+                             simname.split('.')[0]))
         distCoeffs = None
         # distCoeffs = np.array([0.19021763, -0.59237872, -0.00189399, -0.00129089, 0.39855042])
         useFilter = False
@@ -384,8 +386,8 @@ def request_NVLAD_redir(request):
         W = 480
         H = 640
         est_focal = np.sqrt(W ** 2 + H ** 2) * 1428.643433 / 1440
-        est_K = np.array([[est_focal, 0, W / 2.], [0, est_focal, H / 2.], [0, 0, 1]])
-        # est_K = np.array([[480.33677851, 0, 320.84203781], [0, 479.82289098, 236.27875224], [0, 0, 1]])
+        # est_K = np.array([[est_focal, 0, W / 2.], [0, est_focal, H / 2.], [0, 0, 1]])
+        est_K = np.array([[485, 0, 240], [0., 485, 320], [0, 0, 1]])
         '''
         在这之前使用Patch-NetVLAD进行相似图像匹配，得到一个相似图像列表pred_imgs，包含匹配到图像的路径信息
         在这之后用LightGlue进行特征子提取，计算特征子对应的三维坐标，再利用PnPRANSAC进行pose计算
@@ -399,6 +401,9 @@ def request_NVLAD_redir(request):
             # print(f'after images3-shape: {image3.shape}')
             image3 = np.uint8(image3)
             img = Image.fromarray(image3)
+            # random_filename = str(uuid.uuid4()) + '.jpg'
+            # img.save(os.path.join(settings.MEDIA_ROOT, 'test', random_filename), "JPEG")
+            # return JsonResponse({'message': 'Folder Found'}, status=200)
             img.save(tempimages + '/image3.jpg', "JPEG")
             K3 = est_K
             # K3 = np.array([[968.857117, 0, 240.0], [0, 1337.749634, 320], [0, 0, 1]])
@@ -431,7 +436,7 @@ def request_NVLAD_redir(request):
             min_traverse_windows = 10
             init_traverse_windows = 30
             add_traverse_windows = 1.2
-            # TODO: test change
+            # TODO: test change len(v) - 1 if len(v) - 1 <= 20 else 20
             for i in range(0, len(v) - 1 if len(v) - 1 <= 20 else 20):
                 success = False
                 pose = None
@@ -449,17 +454,15 @@ def request_NVLAD_redir(request):
                 # return JsonResponse({'message': 'SHIT'}, status=200)
                 # image1 = cv2.resize(image1, (W, H))
                 # TODO: may change print(f'K1: {read_pose_3dscanner(v[i][1])[:, :-1]}')
-                # K1 = read_pose_3dscanner(v[i][1])[:, :-1] if os.path.exists(v[i][1]) else est_K
-                # K1[0, 0] *= 1/3
-                # K1[1, 1] *= 1/3
-                # K1[0, 2] *= 1/3
-                # K1[1, 2] *= 1/3
-                # print("the intrinsic of image1 K1:\n", K1)
-                K1 = K3
+                K1 = read_pose_3dscanner(v[i][1])[:, :-1] if os.path.exists(v[i][1]) else est_K
+                K1[0, 0] *= 1/3
+                K1[1, 1] *= 1/3
+                K1[0, 2] *= 1/3
+                K1[1, 2] *= 1/3
+                print("the intrinsic of image1 K1:\n", K1)
+                # K1 = K3
                 # K1 = K1 / 1000
                 # K1 = est_K
-                # TODO: print(f'image1 intrinsic:{K1}')
-                # print(f'image1 shape:{image1.shape}')
                 P1 = read_pose_3dscanner(v[i][2]) if os.path.exists(v[i][2]) else np.eye(3, 4)
                 # print(f'image1 pose:{P1}')
                 
@@ -480,7 +483,7 @@ def request_NVLAD_redir(request):
                 #         good_matches13 = np.array(m13)
                 xfeat = XFeat()
                 kpoints1, kpoints3 = xfeat.match_xfeat_star(image1, image3, top_k=6000)
-                
+                print(f'the number of kpoints with image_{v[i][4]}: {kpoints1.shape[0]}')
                 # 根据13匹配点集计算
                 if kpoints1.shape[0] <= 400:
                   print("common points too low, pose est failed!")
@@ -686,6 +689,7 @@ def request_NVLAD_redir(request):
                 print(
                     f'Loss rot vec dir:{np.linalg.norm(rot_vec_p3 / np.linalg.norm(rot_vec_p3) - rot_vec_qim / np.linalg.norm(rot_vec_qim))}')
         return JsonResponse({'message': 'Folder Found', 'saved_path': saved_images, 'positions': positions}, status=200)
+      
 
     else:
         return JsonResponse({'error': 'POST request required'}, status=400)
