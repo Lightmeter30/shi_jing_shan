@@ -12,6 +12,7 @@ from .forms import VideoForm, ImageForm
 from utils.upload import new_name, new_dir_name
 from utils.calib3d import *
 from utils.draw import *
+from utils.nvlad_utils import *
 from datetime import datetime
 import os, re
 import subprocess
@@ -190,7 +191,6 @@ def image_transform(image: numpy):
 
 '''
 points: image1所有的特征点集合(pixel坐标), 是一个shape为N1 x 2的数组
-matchs: image1和image3的特征点匹配对, 是一个N2 x 2的数组, 其中match[0]为image1的index, match[1]时image3的index
 depth: 深度图路径字符串
 K: 相机内参 3x3
 P: 相机位姿4x4
@@ -279,388 +279,229 @@ def test_read_image(request):
 
 @csrf_exempt
 def request_NVLAD_redir(request):
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST request required'}, status=400)
+        
     start_init = time.time()
+    
+    # Setup paths
     img_loc = request.GET.get('source_location', 'temps/')
     img_loc = os.path.join(img_loc, 'color')
     src_loc = os.path.join(settings.MEDIA_ROOT, 'images/', img_loc)
     dataset_loc = img_loc.split('/')[0]
+    
     intri_loc = os.path.join(settings.MEDIA_ROOT, 'images/',
-                             request.GET.get('camera_intri_location', os.path.join(dataset_loc, 'intrinsic')))
+                            request.GET.get('camera_intri_location', os.path.join(dataset_loc, 'intrinsic')))
     exter_loc = os.path.join(settings.MEDIA_ROOT, 'images/',
-                             request.GET.get('camera_exter_location', os.path.join(dataset_loc, 'pose')))
+                            request.GET.get('camera_exter_location', os.path.join(dataset_loc, 'pose')))
     depth_loc = os.path.join(settings.MEDIA_ROOT, 'images/',
-                             request.GET.get('camera_depth_location', os.path.join(dataset_loc, 'depth')))
+                            request.GET.get('camera_depth_location', os.path.join(dataset_loc, 'depth')))
     req_loc = os.path.join(settings.MEDIA_ROOT, 'nvlabs/', request.GET.get('request_location', img_loc))
+    
     if req_loc[-1] != '/':
         req_loc = req_loc + '/'
     if src_loc[-1] != '/':
         src_loc = src_loc + '/'
+        
     if not os.path.exists(req_loc) or not os.path.exists(src_loc):
         return JsonResponse({'error': 'No such folder'}, status=404)
-    nv_params = request.GET.get('nv_params', '')
-    if request.method == 'POST':
-        tempfolder = os.path.join(req_loc, new_dir_name('query'))
-        tempfeature = os.path.join(tempfolder, 'query_features')
-        tempimages = os.path.join(tempfolder, 'query_folder')
-        tempquery = os.path.join(tempfolder, 'query.txt')
-        depth_info = os.path.join(depth_loc, 'depth.txt')
-        with open(depth_info, 'r') as f:
-            depth_setting = [float(num) for num in f.read().split()]
-        if not os.path.exists(tempfolder):
-            os.makedirs(tempfolder)
-            os.makedirs(tempfeature)
-            os.makedirs(tempimages)
-        # get images from body.images
-        images = request.FILES.getlist('images')
-
-        if images is None or len(images) == 0:
-            print('single image')
-            images = [request.FILES.get('images')]
-        if not any(images):
-            return JsonResponse({'error': 'post image required'}, status=404)
-        storage_path = tempimages
-
-        saved_images = []
-        K = np.array([[1428.643433, 0.000000, 1428.643433],
-                      [0.000000, 970.724121, 716.204285],
-                      [0.000000, 0.000000, 1.000000]])
-        camera_matrix = request.POST.get('camera_matrix')
-        if camera_matrix is not None:
-            camera_matrix = json.loads(camera_matrix)
-        # q相机内参
-        qintrinsic = {}
-
-        with open(tempquery, 'w') as qtxt:
-            for i, image in enumerate(images):
-                image_name, _ = os.path.splitext(image.name)
-                image_name = image_name + '.jpg'
-                if camera_matrix is not None and i < len(camera_matrix):
-                    qintrinsic[image_name] = np.array(camera_matrix[i])
-                # qintrinsic[image.name] = np.array(camera_matrix[i]) if camera_matrix and i < len(camera_matrix) else K
-                fs = FileSystemStorage(location=storage_path)
-                saved_image = fs.save(image_name, image)
-                saved_images.append(
-                    save_to_jpg(os.path.join(storage_path, saved_image), os.path.join(storage_path, image_name)))
-                qtxt.write(image_name + '\n')
-
-
-        # 此时图片已经被逆时针翻转90°
-        # TODO: magic code return 000000
-        # default_im = os.path.join(exter_loc, 'frame-000035.pose.txt')
-        # default_P = read_pose_3dscanner(default_im)
-        # print(default_im)
-        # return JsonResponse({'message': 'Folder Found', 'saved_path': saved_images, 'positions': {'image.jpg': default_P.tolist()}}, status=200)
-
-        # command_conda = "source /home/vr717/anaconda3/etc/profile.d/conda.sh && conda activate patchnetvlad "
-        # command_conda = command_conda + f'&& bash match_and_cal_pose.sh {req_loc} {src_loc} {tempfolder} '
-        # command_conda = f'bash match_and_cal_pose.sh {req_loc} {src_loc} {tempfolder} '
-        # command = f'cd {settings.NetVLAD_PATH} && bash -c "{command_conda}"'
-        command = f'cd {settings.NetVLAD_PATH} && bash match_and_cal_pose.sh {req_loc} {src_loc} {tempfolder}'
-
-        # subprocess.run(command, shell=True)
-        os.system(command)
-
-        start = time.time()
-        resfolder = os.path.join(tempfolder, 'result/')
-        positions = {}
-
-        pred_pattern = re.compile(r',\s*')
-        pred_imgs = {}
-
-        if not os.path.exists(os.path.join(resfolder, 'PatchNetVLAD_predictions.txt')):
-            return JsonResponse({'error': 'PatchNetVLAD failed to match'}, status=200)
-        with open(os.path.join(resfolder, 'PatchNetVLAD_predictions.txt'), 'r') as qtxt:
-            for i, line in enumerate(qtxt, start=1):
-                if not line.startswith('#'):
-                    ims = re.split(pred_pattern, line.strip())
-                    ims[0] = ims[0].strip()
-                    ims[1] = ims[1].strip()
-                    _, qimname = os.path.split(ims[0])
-                    _, simname = os.path.split(ims[1])
-                    if qimname not in pred_imgs.keys():
-                        pred_imgs[qimname] = [
-                            (ims[1], os.path.join(intri_loc, simname.split('.')[0] + '.intrinsic_color.txt'),
-                             os.path.join(exter_loc, simname.split('.')[0] + '.pose.txt'),
-                             os.path.join(depth_loc, simname.split('.')[0] + '.depth.jpg'),
-                             simname.split('.')[0])]
-                    else:
-                        pred_imgs[qimname].append(
-                            (ims[1], os.path.join(intri_loc, simname.split('.')[0] + '.intrinsic_color.txt'),
-                             os.path.join(exter_loc, simname.split('.')[0] + '.pose.txt'),
-                             os.path.join(depth_loc, simname.split('.')[0] + '.depth.jpg'),
-                             simname.split('.')[0]))
-        distCoeffs = None
-        useFilter = False
-        filter_num = 100
-        filter_params = {'distCoeffs1': None, 'distCoeffs2': None, 'threshold': 8., 'prob': 0.99, 'no_intrinsic': True}
-        drawMatch = True
-        timeout = 40
-        W = 480
-        H = 640
-        est_focal = np.sqrt(W ** 2 + H ** 2) * 1428.643433 / 1440
-        # est_K = np.array([[est_focal, 0, W / 2.], [0, est_focal, H / 2.], [0, 0, 1]])
-        est_K = np.array([[485, 0, 240], [0., 485, 320], [0, 0, 1]])
+    
+    # Setup processing directories
+    tempfolder = os.path.join(req_loc, new_dir_name('query'))
+    tempfeature = os.path.join(tempfolder, 'query_features')
+    tempimages = os.path.join(tempfolder, 'query_folder')
+    tempquery = os.path.join(tempfolder, 'query.txt')
+    
+    setup_directories(req_loc, tempfolder)
+    
+    # Read depth settings
+    depth_info = os.path.join(depth_loc, 'depth.txt')
+    with open(depth_info, 'r') as f:
+        depth_setting = [float(num) for num in f.read().split()]
+    
+    # Process input images
+    images = request.FILES.getlist('images')
+    if images is None or len(images) == 0:
+        images = [request.FILES.get('images')]
+    if not any(images):
+        return JsonResponse({'error': 'post image required'}, status=404)
+    
+    # Save query images
+    camera_matrix = request.POST.get('camera_matrix')
+    if camera_matrix is not None:
+        camera_matrix = json.loads(camera_matrix)
+    saved_images, qintrinsic = save_query_images(images, tempimages, tempquery, camera_matrix)
+    
+    # Run NetVLAD matching
+    command = f'cd {settings.NetVLAD_PATH} && bash match_and_cal_pose.sh {req_loc} {src_loc} {tempfolder}'
+    os.system(command)
+    
+    # Process results
+    start = time.time()
+    resfolder = os.path.join(tempfolder, 'result/')
+    positions = {}
+    
+    predictions_file = os.path.join(resfolder, 'PatchNetVLAD_predictions.txt')
+    if not os.path.exists(predictions_file):
+        return JsonResponse({'error': 'PatchNetVLAD failed to match'}, status=200)
+    
+    pred_imgs = process_predictions(predictions_file, intri_loc, exter_loc, depth_loc)
+    
+    # Constants for processing
+    W, H = 480, 640
+    est_K = np.array([[485, 0, 240], [0., 485, 320], [0, 0, 1]])
+    distCoeffs = None
+    
+    # Process each query image
+    for qimname, v in pred_imgs.items():
+        # Initialize result containers
+        best_results = {
+            'inliners': np.array([]),
+            'inliners_rate': 0,
+            'points2d': None,
+            'points3d': np.array([]),
+            'K': None,
+            'depth': None,
+            'P': None,
+            'image_name': None,
+            'keypoints': None,
+            'image_RGB': None,
+            'qimname': qimname
+        }
         
-        # 创建result.txt文件
-        result_txt = os.path.join(resfolder, 'result.txt')
-        with open(result_txt, 'w') as f:
-            f.write("=== Processing Log ===\n\n")
+        second_best_results = {
+            'inliners': np.array([]),
+            'inliners_rate': 0,
+            'points2d': None,
+            'points3d': None,
+            'K': None,
+            'depth': None,
+            'P': None,
+            'image_name': None,
+            'keypoints': None,
+            'image_RGB': None,
+            'qimname': qimname
+        }
+        
+        # Process query image
+        qim = os.path.join(tempimages, qimname)
+        image3 = process_single_image(qim, H, W)
+        img = Image.fromarray(image3)
+        img.save(os.path.join(tempimages, 'image3.jpg'), "JPEG")
+        
+        # Get ground truth pose if available
+        ground_truth = os.path.join(exter_loc, qimname.split('.')[0] + '.pose.txt')
+        ground_P3 = read_pose_3dscanner(ground_truth) if os.path.exists(ground_truth) else None
+        
+        # Process each potential match
+        xfeat = XFeat()
+        for i in range(min(len(v), 20)):
+            # Process source image
+            sim1 = v[i][0]
+            image1 = process_single_image(sim1, H, W)
+            K1 = read_pose_3dscanner(v[i][1])[:, :-1] if os.path.exists(v[i][1]) else est_K
+            K1[0, 0] *= 1/3
+            K1[1, 1] *= 1/3
+            K1[0, 2] *= 1/3
+            K1[1, 2] *= 1/3
+            K3 = K1
             
-            for qimname, v in pred_imgs.items():
-                qim = os.path.join(tempimages, qimname)
-                image3 = read_image(qim)
-                image3 = image_transform(image3)
-                image3, _ = resize_image(image3, (H, W))
-                image3 = np.uint8(image3)
-                img = Image.fromarray(image3)
-                img.save(tempimages + '/image3.jpg', "JPEG")
-                K3 = est_K
-
-                best_inliners = np.array([])
-                best_inliners_rate = 0
-                min_residuals_norm = np.inf
-                stop_residuals_norm = 0.1
-                best_inliners_rate_window = 0.1
-                best_image_name = None
-                best_image_RGB = None
-                best_keypoints = None
-                best_description = None
-                best_tracks = None
-                best_depth = None
-                best_match = None
-                best_points2d = None
-                best_points3d = np.array([])
-                best_P = None
-                best_K = None
-
-                # 添加第二好的结果记录
-                second_best_inliners = np.array([])
-                second_best_inliners_rate = 0
-                second_best_image_name = None
-                second_best_image_RGB = None
-                second_best_keypoints = None
-                second_best_depth = None
-                second_best_points2d = None
-                second_best_points3d = np.array([])
-                second_best_P = None
-                second_best_K = None
-
-                default_P = read_pose_3dscanner(v[0][2]) if os.path.exists(v[0][2]) else np.eye(3, 4)
-                ground_truth = os.path.join(exter_loc, qimname.split('.')[0] + '.pose.txt')
-                ground_P3 = read_pose_3dscanner(ground_truth) if os.path.exists(ground_truth) else default_P
-                ground_truth = ''
-                is_stop = False
-                stop_inliner_rate = 0.96
-                use_DST_inliner_rate = 0.5
-                min_traverse_windows = 10
-                init_traverse_windows = 30
-                add_traverse_windows = 1.2
-
-                for i in range(0, len(v) - 1 if len(v) - 1 <= 20 else 20):
-                    success = False
-                    pose = None
-                    traverse_windows = init_traverse_windows
-                    meet_best = False
-
-                    sim1 = v[i][0]
-                    image1 = read_image(sim1)
-                    image1 = image_transform(image1)
-                    image1, _ = resize_image(image1, (H, W))
-                    K1 = read_pose_3dscanner(v[i][1])[:, :-1] if os.path.exists(v[i][1]) else est_K
-                    K1[0, 0] *= 1/3
-                    K1[1, 1] *= 1/3
-                    K1[0, 2] *= 1/3
-                    K1[1, 2] *= 1/3
-                    f.write(f"Processing image {i+1}:\n")
-                    f.write(f"K1:\n{K1}\n")
-                    K3 = K1
+            P1 = read_pose_3dscanner(v[i][2]) if os.path.exists(v[i][2]) else np.eye(3, 4)
+            
+            # Match features
+            # kpoints1, kpoints3 = match_images_xfeat(image1, image3, xfeat)
+            kpoints1, kpoints3 = match_images_lightglue(image1, image3)
+            
+            if kpoints1.shape[0] <= 400:
+                continue
+            
+            # Convert to 3D points
+            points3d, remove_list, camera_coords_list, depth_list = pixel_to_world(
+                kpoints1, v[i][3], K1, np.vstack((P1, np.array([0,0,0,1]))), depth_setting
+            )
+            kpoints1 = np.delete(kpoints1, remove_list, axis=0)
+            kpoints3 = np.delete(kpoints3, remove_list, axis=0)
+            points3d = cv2.convertPointsFromHomogeneous(points3d).squeeze()
+            
+            if points3d.shape[0] >= 200:
+                # Estimate pose
+                success, pose, inliners = estimate_pose_PNPRANSAC(points3d, kpoints3, K3, P1, distCoeffs)
+                
+                if success:
+                    current_results = {
+                        'inliners': inliners,
+                        'inliners_rate': float(len(inliners)) / float(len(kpoints3)),
+                        'points2d': [kpoints1, kpoints3],
+                        'points3d': points3d,
+                        'K': [K1, K3],
+                        'depth': v[i],
+                        'P': [P1, pose],
+                        'image_name': [sim1],
+                        'keypoints': [kpoints1, kpoints3],
+                        'image_RGB': [image1, image3],
+                        'qimname': qimname
+                    }
                     
-                    P1 = read_pose_3dscanner(v[i][2]) if os.path.exists(v[i][2]) else np.eye(3, 4)
-                    
-                    xfeat = XFeat()
-                    kpoints1, kpoints3 = xfeat.match_xfeat_star(image1, image3, top_k=6000)
-                    f.write(f"Number of matched keypoints: {kpoints1.shape[0]}\n")
-                    
-                    if kpoints1.shape[0] <= 400:
-                        f.write("Common points too low, pose estimation failed!\n")
-                        end = time.time()
-                        if end - start_init > timeout:
-                            f.write("Timeout reached\n")
-                            break
-                        continue
-                        
-                    # Extract and print frame number from image filename
-                    frame_number = os.path.basename(sim1).split('.')[0].split('-')[1]
-                    print(f"Processing frame number: {frame_number}")
-                        
-                    points3d, remove_list, camera_coords_list, depth_list = pixel_to_world(kpoints1, v[i][3], K1, np.vstack((P1, np.array([0,0,0,1]))), depth_setting)
-                    kpoints1 = np.delete(kpoints1, remove_list, axis=0)
-                    kpoints3 = np.delete(kpoints3, remove_list, axis=0)
-                    points3d = cv2.convertPointsFromHomogeneous(points3d).squeeze()
-                    
-                    if points3d.shape[0] >= 200:
-                        rot_vec1, _ = cv2.Rodrigues(P1[:3, :3])
-                        shift1 = copy.deepcopy(P1[:3, 3:])
-                        f.write(f"Points3D shape: {points3d.shape}\n")
-                        f.write(f"Kpoints3 shape: {kpoints3.shape}\n")
-                        
-                        success, R, T, inliners = cv2.solvePnPRansac(points3d, kpoints3, K3, distCoeffs,
-                                                                   useExtrinsicGuess=True, rvec=rot_vec1,
-                                                                   tvec=shift1)
-                        
-                        if success and inliners is not None:
-                            inliners = inliners.squeeze()
-                            Rtmp, _ = cv2.Rodrigues(R)
-                            pose = np.hstack((Rtmp, T))
-                            f.write(f"Estimated pose:\n{pose}\n")
-                            
-                            residuals = ground_P3 - pose
-                            if len(inliners) >= 100 and (
-                                    len(inliners) > (best_inliners_rate + best_inliners_rate_window) * len(kpoints3) \
-                                    or (best_inliners_rate - best_inliners_rate_window) * len(kpoints3) < len(inliners) \
-                                    and len(best_inliners) < len(inliners)) \
-                                    or len(best_inliners) < len(inliners) < 100 \
-                                    or os.path.exists(ground_truth) and np.linalg.norm(residuals) < min_residuals_norm:
-                                f.write("Found good match result\n")
-                                if best_points3d is None or points3d.shape[0] > best_points3d.shape[0]:
-                                    # 保存当前最好的结果到第二好的变量中
-                                    print(f'find the best image match point3d shape:{points3d.shape}')
-                                    second_best_inliners = best_inliners
-                                    second_best_inliners_rate = best_inliners_rate
-                                    second_best_points2d = best_points2d
-                                    second_best_points3d = best_points3d
-                                    second_best_K = best_K
-                                    second_best_depth = best_depth
-                                    second_best_P = best_P
-                                    second_best_image_name = best_image_name
-                                    second_best_keypoints = best_keypoints
-                                    second_best_image_RGB = best_image_RGB
-
-                                    # 更新最好的结果
-                                    best_inliners = inliners
-                                    best_inliners_rate = float(len(inliners)) / float(len(kpoints3))
-                                    best_points2d = [kpoints1, kpoints3]
-                                    best_points3d = points3d
-                                    best_K = [K1, K3]
-                                    best_depth = v[i]
-                                    best_P = [P1, pose]
-                                    best_image_name = [sim1]
-                                    best_keypoints = [kpoints1, kpoints3]
-                                    best_image_RGB = [image1, image3]
-                                    meet_best = True
-                                    traverse_windows = init_traverse_windows if best_inliners_rate >= 0.2 else 0.8 * traverse_windows
-
-                            elif len(inliners) < 0.2 * len(kpoints3):
-                                f.write("Too few inliers\n")
-                                traverse_windows *= 0.95 if meet_best else 0.5
-                            else:
-                                traverse_windows *= 0.97 if meet_best else 0.8
-                        else:
-                            traverse_windows *= 0.95 if meet_best else 0.5
-                    else:
-                        traverse_windows *= 0.95 if meet_best else 0.5
-                        success = False
-                    if second_best_points3d is None or best_points3d.shape[0] > points3d.shape[0] > second_best_points3d.shape[0]:
-                        print(f'find the second best image match point3d shape:{points3d.shape}')
-                        # 如果当前结果不是最好的，但比第二好的更好，则更新第二好的结果
-                        second_best_inliners = inliners
-                        second_best_inliners_rate = float(len(inliners)) / float(len(kpoints3))
-                        second_best_points2d = [kpoints1, kpoints3]
-                        second_best_points3d = points3d
-                        second_best_K = [K1, K3]
-                        second_best_depth = v[i]
-                        second_best_P = [P1, pose]
-                        second_best_image_name = [sim1]
-                        second_best_keypoints = [kpoints1, kpoints3]
-                        second_best_image_RGB = [image1, image3]
-                    torch.cuda.empty_cache()
-
-                end = time.time()
-                if end - start_init > timeout:
-                    f.write("Best ratio failed due to timeout\n")
-                if best_P is not None:
-                    f.write(f"Best inlier number: {len(best_inliners)}\n")
-                    f.write(f"Points3D number: {len(best_points3d)}\n")
-                    
-                    rot_vec1, _ = cv2.Rodrigues(best_P[0][:3, :3])
-                    shift1 = copy.deepcopy(best_P[0][:3, 3:])
-                    inliners_3D = best_points3d[best_inliners]
-                    inliners_2D = best_points2d[1][best_inliners].squeeze()
-                    success0, R0, T0 = cv2.solvePnP(inliners_3D, inliners_2D, K3, distCoeffs,
-                                                  useExtrinsicGuess=True, rvec=rot_vec1, tvec=shift1)
-
-                    if success0:
-                        Rtmp, _ = cv2.Rodrigues(R0)
-                        pose = np.hstack((Rtmp, T0))
-                        best_P[1] = pose
-                        f.write(f"Final pose:\n{pose}\n")
-                        positions[qimname] = best_P[1].tolist()
-                    if drawMatch:
-                        depth_image = Image.open(best_depth[3])
-                        depth_image = depth_image.resize((480, 640))
-                        depth_image.save(storage_path + os.sep + "best_depth.jpg")
-                        canvas = warp_corners_and_draw_matches(best_keypoints[0], best_keypoints[1], best_image_RGB[0], best_image_RGB[1])
-                        compression_params = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
-                        cv2.imwrite(os.path.join(resfolder,
-                                               'match_' + os.path.basename(best_image_name[0]).split('.')[0] + qimname), canvas, compression_params)
-
-                    # 记录第二好的结果
-                    if second_best_P is not None:
-                        rot_vec1, _ = cv2.Rodrigues(second_best_P[0][:3, :3])
-                        shift1 = copy.deepcopy(second_best_P[0][:3, 3:])
-                        inliners_3D = second_best_points3d[second_best_inliners]
-                        inliners_2D = second_best_points2d[1][second_best_inliners].squeeze()
-                        success0, R0, T0 = cv2.solvePnP(inliners_3D, inliners_2D, K3, distCoeffs,
-                                                  useExtrinsicGuess=True, rvec=rot_vec1, tvec=shift1)
-                        if success0:
-                            Rtmp, _ = cv2.Rodrigues(R0)
-                            pose = np.hstack((Rtmp, T0))
-                            second_best_P[1] = pose
-                        
-                        if drawMatch:
-                            depth_image = Image.open(second_best_depth[3])
-                            depth_image = depth_image.resize((480, 640))
-                            depth_image.save(storage_path + os.sep + "second_best_depth.jpg")
-                            canvas = warp_corners_and_draw_matches(second_best_keypoints[0], second_best_keypoints[1], second_best_image_RGB[0], second_best_image_RGB[1])
-                            compression_params = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
-                            cv2.imwrite(os.path.join(resfolder,
-                                                   'second_best_match_' + os.path.basename(second_best_image_name[0]).split('.')[0] + qimname), canvas, compression_params)
-
-                else:
-                    positions[qimname] = default_P.tolist()
-                    f.write("All pose estimation failed\n")
-                f.write(f"PnP time cost: {end - start:.3f}s\n")
-                f.write(f"Total time cost: {end - start_init:.3f}s\n")
-
-                if ground_P3 is not None and best_P is not None:
-                    R3 = ground_P3[:3, :3]
-                    R3_qim = best_P[1][:3, :3]
-                    residuals = ground_P3 - best_P[1]
-                    rot_vec_p3, _ = cv2.Rodrigues(R3)
-                    rot_vec_qim, _ = cv2.Rodrigues(R3_qim)
-                    f.write(f"Loss shift: {np.linalg.norm(residuals[:, 3]):.3f}\n")
-                    f.write(f"Loss rot: {np.linalg.norm(residuals[:, :3]):.3f}\n")
-                    f.write(f"Loss rot radius: {(np.linalg.norm(rot_vec_p3) - np.linalg.norm(rot_vec_qim)) * 180. / np.pi:.3f}\n")
-                    f.write(f"Loss rot vec dir: {np.linalg.norm(rot_vec_p3 / np.linalg.norm(rot_vec_p3) - rot_vec_qim / np.linalg.norm(rot_vec_qim)):.3f}\n")
-                    f.write("----------------final result----------------\n")
-                    f.write(f'find the best image match point3d shape:{best_points3d.shape}\n')
-                    f.write(f'find the best inlier number:{len(best_inliners)}\n')
-                    f.write('final best match image pose:\n')
-                    for row in best_P[0]:
-                        f.write(' '.join(map(str, row)) + '\n')
-                    f.write('final redirect image pose:\n')
-                    for row in best_P[1]:
-                        f.write(' '.join(map(str, row)) + '\n')
-                    f.write(f'-------------second best result----------------\n')
-                    f.write("\nSecond best match result:\n")
-                    f.write(f"Second best inlier number: {len(second_best_inliners)}\n")
-                    f.write(f"Second best Points3D number: {len(second_best_points3d)}\n")
-                    f.write(f"Second best image: {os.path.basename(second_best_image_name[0])}\n")
-                    f.write('Second best pose:\n')
-                    for row in second_best_P[1]:
-                        f.write(' '.join(map(str, row)) + '\n')
-
-                    
-        return JsonResponse({'message': 'Folder Found', 'saved_path': saved_images, 'positions': positions}, status=200)
-    else:
-        return JsonResponse({'error': 'POST request required'}, status=400)
+                    update_best_results(current_results, best_results, second_best_results)
+            
+            torch.cuda.empty_cache()
+        
+        # Save results
+        if best_results['P'] is not None:
+            # Recalculate pose using inliers from RANSAC
+            inliners_3D = best_results['points3d'][best_results['inliners']]
+            inliners_2D = best_results['points2d'][1][best_results['inliners']].squeeze()
+            rot_vec1, _ = cv2.Rodrigues(best_results['P'][0][:3, :3])
+            shift1 = best_results['P'][0][:3, 3:]
+            
+            # Use PNP to get more accurate pose
+            success, refined_pose = estimate_pose_PNP(
+                inliners_3D, 
+                inliners_2D, 
+                best_results['K'][1], 
+                best_results['P'][0], 
+                distCoeffs
+            )
+            
+            if success:
+                best_results['P'][1] = refined_pose
+                positions[qimname] = refined_pose.tolist()
+            else:
+                positions[qimname] = best_results['P'][1].tolist()
+            
+            save_match_visualization(best_results, second_best_results, resfolder, tempimages)
+            
+            if ground_P3 is not None:
+                error_metrics = calculate_pose_error(ground_P3, best_results['P'])
+                print(f"Pose error metrics for {qimname}:", error_metrics)
+        else:
+            default_P = read_pose_3dscanner(v[0][2]) if os.path.exists(v[0][2]) else np.eye(3, 4)
+            positions[qimname] = default_P.tolist()
+        if second_best_results['P'] is not None:
+            inliners_3D = second_best_results['points3d'][second_best_results['inliners']]
+            inliners_2D = second_best_results['points2d'][1][second_best_results['inliners']].squeeze()
+            rot_vec1, _ = cv2.Rodrigues(second_best_results['P'][0][:3, :3])
+            shift1 = second_best_results['P'][0][:3, 3:]
+            
+            success, refined_pose = estimate_pose_PNP(
+                inliners_3D, 
+                inliners_2D, 
+                second_best_results['K'][1], 
+                second_best_results['P'][0], 
+                distCoeffs
+            )
+            if success:
+              second_best_results['P'][1] = refined_pose
+                
+    end = time.time()
+    total_time = end - start_init
+    
+    # Write results to file
+    result_txt = os.path.join(resfolder, 'result.txt')
+    write_results_to_file(result_txt, best_results, second_best_results, total_time)
+    
+    return JsonResponse({
+        'message': 'Folder Found',
+        'saved_path': saved_images,
+        'positions': positions
+    }, status=200)
