@@ -196,14 +196,13 @@ K: 相机内参 3x3
 P: 相机位姿4x4
 return point3D Nx4(齐次坐标)
 '''
-def pixel_to_world(points: numpy, depth, K: numpy, P: numpy, depth_setting):
-    Z_Near, Z_Far = depth_setting[0], depth_setting[1]
+def pixel_to_world(points: numpy, depth, K: numpy, P: numpy, Z_Far):
     
     # 1. 读取深度图
     depth_image = Image.open(depth)
     if depth_image is None:
         raise ValueError('Could not read the depth image.')
-    depth_image = depth_image.resize((480, 640))
+    # depth_image = depth_image.resize((480, 640))
     
     # 2. 设置相机内参
     f_x, f_y, c_x, c_y = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
@@ -217,24 +216,30 @@ def pixel_to_world(points: numpy, depth, K: numpy, P: numpy, depth_setting):
     # 5. 批量读取深度值
     depth_values = np.array([depth_image.getpixel((int(p[0]), int(p[1]))) for p in points])
     # 将RGB三个通道组合成一个深度值 (R << 16) | (G << 8) | B
-    depth_values = np.array([(r << 16) | (g << 8) | b for r, g, b in depth_values])
-    
+    # depth_values = np.array([(r << 16) | (g << 8) | b for r, g, b in depth_values])
+    depth_values = np.array([b for r, g, b in depth_values])
     # 6. 计算有效掩码
-    valid_mask = (depth_values != 0xFFFFFF) & (depth_values != 0)
-    
+    # valid_mask = (depth_values != 0xFFFFFF) & (depth_values != 0)
+    valid_mask = (depth_values != 255) & (depth_values != 0)
+    # print(f'valid_mask[valid_mask] shape: {valid_mask[valid_mask].shape}')
     # 7. 计算深度值
-    # 将24位深度值归一化到[0,1]范围，然后映射到[Z_Near, Z_Far]
-    depths = Z_Near + (depth_values[valid_mask] / 0xFFFFFF) * (Z_Far - Z_Near)
+    # 将24位深度值归一化到[0,1]范围，然后映射到[0, Z_Far]
+    # depths = 0 + (depth_values[valid_mask] / 0xFFFFFF) * (Z_Far - 0)
+    depths = (depth_values[valid_mask] / 255) * (Z_Far)
     
     # 打印计算得到的深度值统计信息
     if len(depths) > 0:
         print(f"Calculated depths statistics:")
+        min_depth_idx = np.argmin(depth_values[valid_mask])
+        max_depth_idx = np.argmax(depth_values[valid_mask])
+        min_depth_point = points[valid_mask][min_depth_idx]
+        max_depth_point = points[valid_mask][max_depth_idx]
+        print(f'  - Mininum pixel depth: {np.min(depth_values[valid_mask])} at pixel ({min_depth_point[0]:.1f}, {min_depth_point[1]})')
+        print(f'  - Maximum pixel depth: {np.max(depth_values[valid_mask])} at pixel ({max_depth_point[0]:.1f}, {max_depth_point[1]})')
         print(f"  - Minimum depth: {np.min(depths):.3f}")
         print(f"  - Maximum depth: {np.max(depths):.3f}")
         print(f"  - Mean depth: {np.mean(depths):.3f}")
         print(f"  - Number of valid depths: {len(depths)}")
-        print(f"  - Z_Near: {Z_Near:.3f}")
-        print(f"  - Z_Far: {Z_Far:.3f}")
     
     # 8. 获取有效点
     points_valid = points[valid_mask]
@@ -246,7 +251,7 @@ def pixel_to_world(points: numpy, depth, K: numpy, P: numpy, depth_setting):
     camera_coords[:, 2] = depths
     camera_coords[:, 3] = 1
     
-    # 10. 转换到世界坐标
+    # 10. 转换到世界坐标 P_inv 4 x 4 camera_coords.T 4 x 1
     world_coords = (P_inv @ camera_coords.T).T
     
     # 11. 记录被移除点的索引
@@ -281,7 +286,7 @@ def test_read_image(request):
 def request_NVLAD_redir(request):
     if request.method != 'POST':
         return JsonResponse({'error': 'POST request required'}, status=400)
-        
+
     start_init = time.time()
     
     # Setup paths
@@ -297,7 +302,18 @@ def request_NVLAD_redir(request):
     depth_loc = os.path.join(settings.MEDIA_ROOT, 'images/',
                             request.GET.get('camera_depth_location', os.path.join(dataset_loc, 'depth')))
     req_loc = os.path.join(settings.MEDIA_ROOT, 'nvlabs/', request.GET.get('request_location', img_loc))
-    
+    '''
+    target_pose = os.path.join(exter_loc, 'frame-000000.pose.txt')
+    target = read_pose_3dscanner(target_pose)
+    return JsonResponse({
+      'message': 'Folder Found',
+      'saved_path': ["/home/takune/relocation/shi_jing_shan/media/nvlabs/gxl_02/color/query_20250521030653_a90b882970/query_folder/image.jpg"],
+      'positions': {
+        'image.jpg': target.tolist()
+      }
+    }, status=200)
+    '''
+
     if req_loc[-1] != '/':
         req_loc = req_loc + '/'
     if src_loc[-1] != '/':
@@ -317,7 +333,7 @@ def request_NVLAD_redir(request):
     # Read depth settings
     depth_info = os.path.join(depth_loc, 'depth.txt')
     with open(depth_info, 'r') as f:
-        depth_setting = [float(num) for num in f.read().split()]
+        Z_Far = float(f.read())
     
     # Process input images
     images = request.FILES.getlist('images')
@@ -349,6 +365,7 @@ def request_NVLAD_redir(request):
     
     # Constants for processing
     W, H = 480, 640
+    # W, H = 1440, 1920
     est_K = np.array([[485, 0, 240], [0., 485, 320], [0, 0, 1]])
     distCoeffs = None
     
@@ -366,7 +383,8 @@ def request_NVLAD_redir(request):
             'image_name': None,
             'keypoints': None,
             'image_RGB': None,
-            'qimname': qimname
+            'qimname': qimname,
+            'camera_coords_list': None
         }
         
         second_best_results = {
@@ -380,7 +398,8 @@ def request_NVLAD_redir(request):
             'image_name': None,
             'keypoints': None,
             'image_RGB': None,
-            'qimname': qimname
+            'qimname': qimname,
+            'camera_coords_list': None
         }
         
         # Process query image
@@ -388,7 +407,7 @@ def request_NVLAD_redir(request):
         image3 = process_single_image(qim, H, W)
         img = Image.fromarray(image3)
         img.save(os.path.join(tempimages, 'image3.jpg'), "JPEG")
-        
+        K3 = est_K
         # Get ground truth pose if available
         ground_truth = os.path.join(exter_loc, qimname.split('.')[0] + '.pose.txt')
         ground_P3 = read_pose_3dscanner(ground_truth) if os.path.exists(ground_truth) else None
@@ -414,10 +433,10 @@ def request_NVLAD_redir(request):
             
             if kpoints1.shape[0] <= 400:
                 continue
-            
+            print(f'depth path: {v[i][3]}')
             # Convert to 3D points
             points3d, remove_list, camera_coords_list, depth_list = pixel_to_world(
-                kpoints1, v[i][3], K1, np.vstack((P1, np.array([0,0,0,1]))), depth_setting
+                kpoints1, v[i][3], K1, np.vstack((P1, np.array([0,0,0,1]))), Z_Far
             )
             kpoints1 = np.delete(kpoints1, remove_list, axis=0)
             kpoints3 = np.delete(kpoints3, remove_list, axis=0)
@@ -439,7 +458,8 @@ def request_NVLAD_redir(request):
                         'image_name': [sim1],
                         'keypoints': [kpoints1, kpoints3],
                         'image_RGB': [image1, image3],
-                        'qimname': qimname
+                        'qimname': qimname,
+                        'camera_coords_list': camera_coords_list
                     }
                     
                     update_best_results(current_results, best_results, second_best_results)
@@ -451,9 +471,13 @@ def request_NVLAD_redir(request):
             # Recalculate pose using inliers from RANSAC
             inliners_3D = best_results['points3d'][best_results['inliners']]
             inliners_2D = best_results['points2d'][1][best_results['inliners']].squeeze()
-            rot_vec1, _ = cv2.Rodrigues(best_results['P'][0][:3, :3])
-            shift1 = best_results['P'][0][:3, 3:]
-            
+            # print inliners world 3D points and pixel 2D points
+            txt_3d = os.path.join(resfolder, 'best_result_3d.txt')
+            txt_2d = os.path.join(resfolder, 'best_result_2d.txt')
+            txt_camera = os.path.join(resfolder, 'best_result_camera_3D.txt')
+            save_points_to_file(txt_2d, inliners_2D)
+            save_points_to_file(txt_3d, inliners_3D)
+            save_points_to_file(txt_camera, best_results['camera_coords_list'])
             # Use PNP to get more accurate pose
             success, refined_pose = estimate_pose_PNP(
                 inliners_3D, 
@@ -480,9 +504,10 @@ def request_NVLAD_redir(request):
         if second_best_results['P'] is not None:
             inliners_3D = second_best_results['points3d'][second_best_results['inliners']]
             inliners_2D = second_best_results['points2d'][1][second_best_results['inliners']].squeeze()
-            rot_vec1, _ = cv2.Rodrigues(second_best_results['P'][0][:3, :3])
-            shift1 = second_best_results['P'][0][:3, 3:]
-            
+            txt_3d = os.path.join(resfolder, 'second_best_result_3d.txt')
+            txt_2d = os.path.join(resfolder, 'second_best_result_2d.txt')
+            save_points_to_file(txt_2d, inliners_2D)
+            save_points_to_file(txt_3d, inliners_3D)
             success, refined_pose = estimate_pose_PNP(
                 inliners_3D, 
                 inliners_2D, 
