@@ -14,6 +14,7 @@ from lightglue import LightGlue, SuperPoint, DISK
 from utils.upload import new_name, new_dir_name
 from utils.calib3d import *
 from utils.draw import *
+import copy
 
 feature_extractor = DISK(max_num_keypoints=2048).eval().to(settings.DEVICE)  # load the extractor
 feature_match = LightGlue(features="disk", depth_confidence=-1, width_confidence=-1).eval().to(settings.DEVICE)
@@ -86,13 +87,16 @@ def process_single_image(image_path, H=640, W=480):
     """Process a single image for matching."""
     image = read_image(image_path)
     image = image_transform(image)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    image = cv2.equalizeHist(image)
+    image = cv2.GaussianBlur(image, (3, 3), 0)
     image, _ = resize_image(image, (H, W))
     image = np.uint8(image)
     return image
 
 def match_images_xfeat(image1, image3, xfeat):
     """Match features between two images using XFeat."""
-    kpoints1, kpoints3 = xfeat.match_xfeat_star(image1, image3, top_k=6000)
+    kpoints1, kpoints3 = xfeat.match_xfeat_star(image1, image3, top_k=2000)
     return kpoints1, kpoints3
 
 def match_images_lightglue(image1, image3):
@@ -112,11 +116,16 @@ def match_images_lightglue(image1, image3):
 def estimate_pose_PNPRANSAC(points3d, kpoints3, K3, P1, distCoeffs=None):
     """Estimate camera pose using PnP."""
     rot_vec1, _ = cv2.Rodrigues(P1[:3, :3])
-    shift1 = P1[:3, 3:]
+    shift1 = copy.deepcopy(P1[:3, 3:])
     
     success, R, T, inliners = cv2.solvePnPRansac(
         points3d, kpoints3, K3, distCoeffs,
-        useExtrinsicGuess=True, rvec=rot_vec1, tvec=shift1
+        useExtrinsicGuess=True,
+        rvec=rot_vec1,
+        tvec=shift1,
+        reprojectionError=8,
+        confidence=0.95,
+        iterationsCount=200
     )
     
     if success and inliners is not None:
@@ -130,7 +139,7 @@ def estimate_pose_PNPRANSAC(points3d, kpoints3, K3, P1, distCoeffs=None):
 def estimate_pose_PNP(points3d, kpoints3, K3, P1, distCoeffs=None):
     """Estimate camera pose using PnP."""
     rot_vec1, _ = cv2.Rodrigues(P1[:3, :3])
-    shift1 = P1[:3, 3:]
+    shift1 = copy.deepcopy(P1[:3, 3:])
     
     success, R, T = cv2.solvePnP(
         points3d, kpoints3, K3, distCoeffs,
@@ -163,35 +172,56 @@ def save_match_visualization(best_results, second_best_results, resfolder, stora
         depth_image = Image.open(best_results['depth'][3])
         depth_image = depth_image.resize((480, 640))
         depth_image.save(os.path.join(storage_path, "best_depth.jpg"))
+        inliners_1 = best_results['keypoints'][0][best_results['inliners']]
+        inliners_2 = best_results['keypoints'][1][best_results['inliners']]
         
         canvas = warp_corners_and_draw_matches(
-            best_results['keypoints'][0], 
-            best_results['keypoints'][1],
+            inliners_1, 
+            inliners_2,
             best_results['image_RGB'][0], 
             best_results['image_RGB'][1]
         )
+        kp_img1 = draw_keypoints(best_results['image_RGB'][0], inliners_1)
+        kp_img2 = draw_keypoints(best_results['image_RGB'][1], inliners_2)
         compression_params = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
         cv2.imwrite(
-            os.path.join(resfolder, 'match_' + os.path.basename(best_results['image_name'][0]).split('.')[0] + best_results['qimname']),
+            os.path.join(resfolder, 'match_' + os.path.basename(best_results['image_name'][0]).split('.')[0] + best_results['qimname'] + '.jpg'),
             canvas, compression_params
         )
-    
+        cv2.imwrite(
+            os.path.join(resfolder, os.path.basename(best_results['image_name'][0]).split('.')[0] + '_keypoints.jpg'),
+            kp_img1, compression_params
+        )
+        cv2.imwrite(
+            os.path.join(resfolder, best_results['qimname'].split('.')[0] + '_keypoints.jpg'),
+            kp_img2, compression_params
+        )
+
     if second_best_results['P'] is not None:
         depth_image = Image.open(second_best_results['depth'][3])
         depth_image = depth_image.resize((480, 640))
         depth_image.save(os.path.join(storage_path, "second_best_depth.jpg"))
+        inliners_1 = second_best_results['keypoints'][0][second_best_results['inliners']]
+        inliners_2 = second_best_results['keypoints'][1][second_best_results['inliners']]
         
         canvas = warp_corners_and_draw_matches(
-            second_best_results['keypoints'][0],
-            second_best_results['keypoints'][1],
+            inliners_1,
+            inliners_2,
             second_best_results['image_RGB'][0],
             second_best_results['image_RGB'][1]
         )
+        kp_img1 = draw_keypoints(second_best_results['image_RGB'][0], inliners_1)
+        kp_img2 = draw_keypoints(second_best_results['image_RGB'][1], inliners_2)
         compression_params = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
         cv2.imwrite(
-            os.path.join(resfolder, 'second_best_match_' + os.path.basename(second_best_results['image_name'][0]).split('.')[0] + second_best_results['qimname']),
+            os.path.join(resfolder, 'second_best_match_' + os.path.basename(second_best_results['image_name'][0]).split('.')[0] + second_best_results['qimname'] + '.jpg'),
             canvas, compression_params
         )
+        cv2.imwrite(
+            os.path.join(resfolder, os.path.basename(second_best_results['image_name'][0]).split('.')[0] + '_keypoints.jpg'),
+            kp_img1, compression_params
+        )
+            
 
 def calculate_pose_error(ground_P3, best_P):
     """Calculate pose estimation error metrics."""
@@ -240,3 +270,9 @@ def write_results_to_file(result_txt, best_results, second_best_results, total_t
                 f.write(' '.join(map(str, row)) + '\n')
         else:
             f.write('No second best match found\n') 
+
+def save_points_to_file(txt, points):
+    """Save points to file. Each row in points is written as a line with K numbers separated by spaces."""
+    with open(txt, 'w') as f:
+        for i in range(points.shape[0]):
+            f.write(' '.join(map(str, points[i])) + '\n')
