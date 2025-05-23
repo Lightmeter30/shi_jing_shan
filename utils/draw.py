@@ -22,11 +22,16 @@ def warp_corners_and_draw_matches(ref_points, dst_points, img1, img2):
     #     cv2.line(img2_with_corners, start_point, end_point, (0, 255, 0), 4)  # Using solid green for corners
 
     # Prepare keypoints and matches for drawMatches function
-    keypoints1 = [cv2.KeyPoint(p[0], p[1], 5) for p in ref_points]
-    keypoints2 = [cv2.KeyPoint(p[0], p[1], 5) for p in dst_points]
+    keypoints1 = [cv2.KeyPoint(p[0], p[1], 2) for p in ref_points]
+    keypoints2 = [cv2.KeyPoint(p[0], p[1], 2) for p in dst_points]
     matches = [cv2.DMatch(i,i,0) for i in range(len(mask)) if mask[i]]
 
     # Draw inlier matches
     img_matches = cv2.drawMatches(img1, keypoints1, img2, keypoints2, matches, None)
 
     return img_matches
+
+def draw_keypoints(img, keypoints):
+    keypoints = [cv2.KeyPoint(p[0], p[1], 2) for p in keypoints]
+    img_keypoints = cv2.drawKeypoints(img, keypoints, None)
+    return img_keypoints
