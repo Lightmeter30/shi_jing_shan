@@ -19,7 +19,6 @@ import subprocess
 import numpy as np
 import cv2, numpy
 import time
-from PIL import Image
 from lightglue.utils import read_image, resize_image
 import torch
 import copy
@@ -179,89 +178,6 @@ def request_NVLAD(request):
     else:
         return JsonResponse({'error': 'NO such folder'}, status=404)
 
-
-def image_transform(image: numpy):
-    (height, width) = image.shape[:2]
-    if height >= width:
-        return image
-    # rotate the src image 90 degrees clockwise
-    rotated_image = cv2.transpose(image)
-    # rotated_image = cv2.flip(rotated_image, 1)
-    return rotated_image
-
-'''
-points: image1所有的特征点集合(pixel坐标), 是一个shape为N1 x 2的数组
-depth: 深度图路径字符串
-K: 相机内参 3x3
-P: 相机位姿4x4
-return point3D Nx4(齐次坐标)
-'''
-def pixel_to_world(points: numpy, depth, K: numpy, P: numpy, Z_Far):
-    
-    # 1. 读取深度图
-    depth_image = Image.open(depth)
-    if depth_image is None:
-        raise ValueError('Could not read the depth image.')
-    # depth_image = depth_image.resize((480, 640))
-    
-    # 2. 设置相机内参
-    f_x, f_y, c_x, c_y = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
-    
-    # 3. 构造齐次像素坐标 Nx3
-    points_homo = np.hstack((points, np.ones((points.shape[0], 1))))
-    
-    # 4. 计算相机位姿矩阵的逆矩阵
-    P_inv = np.linalg.inv(P)
-    
-    # 5. 批量读取深度值
-    depth_values = np.array([depth_image.getpixel((int(p[0]), int(p[1]))) for p in points])
-    # 将RGB三个通道组合成一个深度值 (R << 16) | (G << 8) | B
-    # depth_values = np.array([(r << 16) | (g << 8) | b for r, g, b in depth_values])
-    depth_values = np.array([b for r, g, b in depth_values])
-    # 6. 计算有效掩码
-    # valid_mask = (depth_values != 0xFFFFFF) & (depth_values != 0)
-    valid_mask = (depth_values != 255) & (depth_values != 0)
-    # print(f'valid_mask[valid_mask] shape: {valid_mask[valid_mask].shape}')
-    # 7. 计算深度值
-    # 将24位深度值归一化到[0,1]范围，然后映射到[0, Z_Far]
-    # depths = 0 + (depth_values[valid_mask] / 0xFFFFFF) * (Z_Far - 0)
-    depths = (depth_values[valid_mask] / 255) * (Z_Far)
-    
-    # 打印计算得到的深度值统计信息
-    if len(depths) > 0:
-        print(f"Calculated depths statistics:")
-        min_depth_idx = np.argmin(depth_values[valid_mask])
-        max_depth_idx = np.argmax(depth_values[valid_mask])
-        min_depth_point = points[valid_mask][min_depth_idx]
-        max_depth_point = points[valid_mask][max_depth_idx]
-        print(f'  - Mininum pixel depth: {np.min(depth_values[valid_mask])} at pixel ({min_depth_point[0]:.1f}, {min_depth_point[1]})')
-        print(f'  - Maximum pixel depth: {np.max(depth_values[valid_mask])} at pixel ({max_depth_point[0]:.1f}, {max_depth_point[1]})')
-        print(f"  - Minimum depth: {np.min(depths):.3f}")
-        print(f"  - Maximum depth: {np.max(depths):.3f}")
-        print(f"  - Mean depth: {np.mean(depths):.3f}")
-        print(f"  - Number of valid depths: {len(depths)}")
-    
-    # 8. 获取有效点
-    points_valid = points[valid_mask]
-    
-    # 9. 批量计算相机坐标
-    camera_coords = np.zeros((len(points_valid), 4))
-    camera_coords[:, 0] = (points_valid[:, 0] - c_x) * depths / f_x
-    camera_coords[:, 1] = (points_valid[:, 1] - c_y) * depths / f_y
-    camera_coords[:, 2] = depths
-    camera_coords[:, 3] = 1
-    
-    # 10. 转换到世界坐标 P_inv 4 x 4 camera_coords.T 4 x 1
-    world_coords = (P_inv @ camera_coords.T).T
-    
-    # 11. 记录被移除点的索引
-    remove_index_list = np.where(~valid_mask)[0].tolist()
-    
-    print(f'the number of feature points which have a legal depth: {len(world_coords)}')
-    
-    return [world_coords, remove_index_list, camera_coords, depths]
-
-
 @csrf_exempt
 def test_read_image(request):
   depth_image = Image.open('/home/takune/relocation/shi_jing_shan/media/images/sjs1009/depth/frame-000000.depth.jpg')
@@ -281,14 +197,26 @@ def test_read_image(request):
   print(f"Depth image shape: {depth_image.getpixel((1800,1439))}")
   
   return JsonResponse({'success': 'test_image_ok'}, status=200)
+'''
+重定位涉及三套坐标系：
+3DS: 3D Scanner坐标系, 
+Unity: Unity坐标系, 
+CV2: OpenCV坐标系, 
 
+相机外参Pose: 
+c2w: Camera to World, 
+w2c: World to Camera, 
+'''
 @csrf_exempt
 def request_NVLAD_redir(request):
     if request.method != 'POST':
         return JsonResponse({'error': 'POST request required'}, status=400)
 
     start_init = time.time()
-    
+    # 是否将P1的旋转矩阵和位移矩阵分开
+    is_divide = False
+    # 是否将K1和K3设置为相等
+    is_K_equal = False
     # Setup paths
     img_loc = request.GET.get('source_location', 'temps/')
     img_loc = os.path.join(img_loc, 'color')
@@ -303,7 +231,7 @@ def request_NVLAD_redir(request):
                             request.GET.get('camera_depth_location', os.path.join(dataset_loc, 'depth')))
     req_loc = os.path.join(settings.MEDIA_ROOT, 'nvlabs/', request.GET.get('request_location', img_loc))
     '''
-    target_pose = os.path.join(exter_loc, 'frame-000000.pose.txt')
+    target_pose = os.path.join(exter_loc, 'frame-000184.pose.txt')
     target = read_pose_3dscanner(target_pose)
     return JsonResponse({
       'message': 'Folder Found',
@@ -313,7 +241,6 @@ def request_NVLAD_redir(request):
       }
     }, status=200)
     '''
-
     if req_loc[-1] != '/':
         req_loc = req_loc + '/'
     if src_loc[-1] != '/':
@@ -326,6 +253,7 @@ def request_NVLAD_redir(request):
     tempfolder = os.path.join(req_loc, new_dir_name('query'))
     tempfeature = os.path.join(tempfolder, 'query_features')
     tempimages = os.path.join(tempfolder, 'query_folder')
+    tempdebug = os.path.join(tempfolder, 'debug')
     tempquery = os.path.join(tempfolder, 'query.txt')
     
     setup_directories(req_loc, tempfolder)
@@ -366,7 +294,8 @@ def request_NVLAD_redir(request):
     # Constants for processing
     W, H = 480, 640
     # W, H = 1440, 1920
-    est_K = np.array([[485, 0, 240], [0., 485, 320], [0, 0, 1]])
+    est_K = np.array([[485, 0, 237], [0., 485, 320], [0, 0, 1]])
+    # est_K = np.array([[485, 0, 320], [0., 485, 237], [0, 0, 1]])
     distCoeffs = None
     
     # Process each query image
@@ -379,12 +308,15 @@ def request_NVLAD_redir(request):
             'points3d': np.array([]),
             'K': None,
             'depth': None,
+            'depth_image': None,
             'P': None,
+            'origin_shift': None,
             'image_name': None,
             'keypoints': None,
             'image_RGB': None,
             'qimname': qimname,
-            'camera_coords_list': None
+            'camera_3dpoints_3DS': None,
+            'point_valid_list': None,
         }
         
         second_best_results = {
@@ -394,12 +326,15 @@ def request_NVLAD_redir(request):
             'points3d': None,
             'K': None,
             'depth': None,
+            'depth_image': None,
             'P': None,
+            'origin_shift': None,
             'image_name': None,
             'keypoints': None,
             'image_RGB': None,
             'qimname': qimname,
-            'camera_coords_list': None
+            'camera_3dpoints_3DS': None,
+            'point_valid_list': None
         }
         
         # Process query image
@@ -423,43 +358,58 @@ def request_NVLAD_redir(request):
             K1[1, 1] *= 1/3
             K1[0, 2] *= 1/3
             K1[1, 2] *= 1/3
-            K3 = K1
+            if is_K_equal:
+                K3 = K1
+            # P1 读出来是一个3 x 4的矩阵
+            P1_c2w_3DS = read_pose_3dscanner(v[i][2]) if os.path.exists(v[i][2]) else np.eye(3, 4)
+
+            p1_shift = None
+            if is_divide:
+                P1_c2w_3DS, p1_shift = pose_divide(P1_c2w_3DS)
+                P1_c2w_3DS = np.hstack((P1_c2w_3DS, np.zeros((P1_c2w_3DS.shape[0], 1))))
             
-            P1 = read_pose_3dscanner(v[i][2]) if os.path.exists(v[i][2]) else np.eye(3, 4)
+            P1_c2w_3DS = np.vstack((P1_c2w_3DS, np.array([0,0,0,1])))
             
             # Match features
             # kpoints1, kpoints3 = match_images_xfeat(image1, image3, xfeat)
             kpoints1, kpoints3 = match_images_lightglue(image1, image3)
-            
+            kpoints1 = np.floor(kpoints1)
+            kpoints3 = np.floor(kpoints3)
+            # kpoints1 = np.array([[110, 372]])
+            # kpoints3 = np.array([[110, 372]])
             if kpoints1.shape[0] <= 400:
                 continue
-            print(f'depth path: {v[i][3]}')
+            print(f'kpoints1: {kpoints1.shape}, kpoints3: {kpoints3.shape}')
             # Convert to 3D points
-            points3d, remove_list, camera_coords_list, depth_list = pixel_to_world(
-                kpoints1, v[i][3], K1, np.vstack((P1, np.array([0,0,0,1]))), Z_Far
+            depth_image = read_image(v[i][3])  # 读取深度图
+            depth_image = cv2.resize(depth_image, (depth_image.shape[1] // 3, depth_image.shape[0] // 3), interpolation=cv2.INTER_NEAREST)  # 调整深度图大小
+            
+            model_3dpoints, remove_list, camera_3dpoints_3DS, point_valid_list, depth_list = pixel_to_world(
+                kpoints1, depth_image, K1, P1_c2w_3DS, Z_Far
             )
             kpoints1 = np.delete(kpoints1, remove_list, axis=0)
             kpoints3 = np.delete(kpoints3, remove_list, axis=0)
-            points3d = cv2.convertPointsFromHomogeneous(points3d).squeeze()
-            
-            if points3d.shape[0] >= 200:
+            print(f'kpoints1: {kpoints1.shape}, kpoints3: {kpoints3.shape}')
+            if model_3dpoints.shape[0] >= 200:
                 # Estimate pose
-                success, pose, inliners = estimate_pose_PNPRANSAC(points3d, kpoints3, K3, P1, distCoeffs)
-                
+                success, pose_c2w_3DS, inliners = estimate_pose_PNPRANSAC(model_3dpoints, kpoints3, K3, P1_c2w_3DS, distCoeffs)
                 if success:
                     current_results = {
                         'inliners': inliners,
                         'inliners_rate': float(len(inliners)) / float(len(kpoints3)),
                         'points2d': [kpoints1, kpoints3],
-                        'points3d': points3d,
+                        'points3d': model_3dpoints,
                         'K': [K1, K3],
                         'depth': v[i],
-                        'P': [P1, pose],
+                        'depth_image': depth_image,  # 保存深度图
+                        'P': [P1_c2w_3DS, pose_c2w_3DS],
+                        'origin_shift': p1_shift,
                         'image_name': [sim1],
                         'keypoints': [kpoints1, kpoints3],
                         'image_RGB': [image1, image3],
                         'qimname': qimname,
-                        'camera_coords_list': camera_coords_list
+                        'camera_3dpoints_3DS': camera_3dpoints_3DS,
+                        'point_valid_list': point_valid_list
                     }
                     
                     update_best_results(current_results, best_results, second_best_results)
@@ -471,13 +421,17 @@ def request_NVLAD_redir(request):
             # Recalculate pose using inliers from RANSAC
             inliners_3D = best_results['points3d'][best_results['inliners']]
             inliners_2D = best_results['points2d'][1][best_results['inliners']].squeeze()
+            best_results['camera_3dpoints_3DS'] = best_results['camera_3dpoints_3DS'][best_results['inliners']]
             # print inliners world 3D points and pixel 2D points
             txt_3d = os.path.join(resfolder, 'best_result_3d.txt')
             txt_2d = os.path.join(resfolder, 'best_result_2d.txt')
             txt_camera = os.path.join(resfolder, 'best_result_camera_3D.txt')
+            txt_valid = os.path.join(resfolder, 'valid_key_point.txt')
             save_points_to_file(txt_2d, inliners_2D)
             save_points_to_file(txt_3d, inliners_3D)
-            save_points_to_file(txt_camera, best_results['camera_coords_list'])
+            save_points_to_file(txt_camera, best_results['camera_3dpoints_3DS'])
+            save_points_to_file(txt_valid, best_results['point_valid_list'])
+            debug_evaluate_pnp_pose(inliners_3D, inliners_2D, best_results['K'][1], best_results['P'][1], tempdebug)
             # Use PNP to get more accurate pose
             success, refined_pose = estimate_pose_PNP(
                 inliners_3D, 
@@ -489,6 +443,8 @@ def request_NVLAD_redir(request):
             
             if success:
                 best_results['P'][1] = refined_pose
+                if best_results['origin_shift'] is not None:
+                    best_results['P'][1][:3, 3] += best_results['origin_shift']
                 positions[qimname] = refined_pose.tolist()
             else:
                 positions[qimname] = best_results['P'][1].tolist()
@@ -517,7 +473,8 @@ def request_NVLAD_redir(request):
             )
             if success:
               second_best_results['P'][1] = refined_pose
-                
+              if second_best_results['origin_shift'] is not None:
+                  second_best_results['P'][1][:3, 3] += second_best_results['origin_shift']
     end = time.time()
     total_time = end - start_init
     
