@@ -13,6 +13,8 @@ from utils.upload import new_name, new_dir_name
 from utils.calib3d import *
 from utils.draw import *
 from utils.nvlad_utils import *
+from utils.times import timer
+from utils.logger import logger
 from datetime import datetime
 import os, re
 import subprocess
@@ -197,26 +199,26 @@ def test_read_image(request):
   print(f"Depth image shape: {depth_image.getpixel((1800,1439))}")
   
   return JsonResponse({'success': 'test_image_ok'}, status=200)
-'''
-重定位涉及三套坐标系：
-3DS: 3D Scanner坐标系, 
-Unity: Unity坐标系, 
-CV2: OpenCV坐标系, 
 
-相机外参Pose: 
-c2w: Camera to World, 
-w2c: World to Camera, 
-'''
+@timer
 @csrf_exempt
 def request_NVLAD_redir(request):
+    '''request_NVLAD_redir DOC'''
     if request.method != 'POST':
         return JsonResponse({'error': 'POST request required'}, status=400)
 
-    start_init = time.time()
     # 是否将P1的旋转矩阵和位移矩阵分开
     is_divide = False
     # 是否将K1和K3设置为相等
     is_K_equal = False
+    # 测试时使用, 计算PnPRANSAC结果与GT pose的误差
+    error_metrics = None
+    # 是否打印debug信息
+    is_debug = True
+    # 是否打印长txt文本的中间信息(best_result_2d.txt best_result_3d.txt best_result_camera_3D.txt valid_key_point.txt)
+    is_write_long_txt = False
+    # 是否提升效率，提前退出循环
+    is_accelerate = False
     # Setup paths
     img_loc = request.GET.get('source_location', 'temps/')
     img_loc = os.path.join(img_loc, 'color')
@@ -253,7 +255,6 @@ def request_NVLAD_redir(request):
     tempfolder = os.path.join(req_loc, new_dir_name('query'))
     tempfeature = os.path.join(tempfolder, 'query_features')
     tempimages = os.path.join(tempfolder, 'query_folder')
-    tempdebug = os.path.join(tempfolder, 'debug')
     tempquery = os.path.join(tempfolder, 'query.txt')
     
     setup_directories(req_loc, tempfolder)
@@ -281,7 +282,6 @@ def request_NVLAD_redir(request):
     os.system(command)
     
     # Process results
-    start = time.time()
     resfolder = os.path.join(tempfolder, 'result/')
     positions = {}
     
@@ -314,6 +314,7 @@ def request_NVLAD_redir(request):
             'image_name': None,
             'keypoints': None,
             'image_RGB': None,
+            'data_image_name': None,
             'qimname': qimname,
             'camera_3dpoints_3DS': None,
             'point_valid_list': None,
@@ -332,20 +333,25 @@ def request_NVLAD_redir(request):
             'image_name': None,
             'keypoints': None,
             'image_RGB': None,
+            'data_image_name': None,
             'qimname': qimname,
             'camera_3dpoints_3DS': None,
             'point_valid_list': None
         }
         
+        is_break = False
+        inliners_lambda = 1.0 # 调和内点率和内点数的占比
         # Process query image
         qim = os.path.join(tempimages, qimname)
         image3 = process_single_image(qim, H, W)
-        img = Image.fromarray(image3)
-        img.save(os.path.join(tempimages, 'image3.jpg'), "JPEG")
+        if is_debug:
+            img = Image.fromarray(image3)
+            img.save(os.path.join(tempimages, 'image3.jpg'), "JPEG")
         K3 = est_K
         # Get ground truth pose if available
-        ground_truth = os.path.join(exter_loc, qimname.split('.')[0] + '.pose.txt')
-        ground_P3 = read_pose_3dscanner(ground_truth) if os.path.exists(ground_truth) else None
+        if is_K_equal:
+            ground_truth = os.path.join(exter_loc, qimname.split('.')[0] + '.pose.txt')
+            ground_P3 = read_pose_3dscanner(ground_truth) if os.path.exists(ground_truth) else None
         
         # Process each potential match
         xfeat = XFeat()
@@ -375,30 +381,27 @@ def request_NVLAD_redir(request):
             kpoints1, kpoints3 = match_images_lightglue(image1, image3)
             kpoints1 = np.floor(kpoints1)
             kpoints3 = np.floor(kpoints3)
-            # kpoints1 = np.array([[110, 372]])
-            # kpoints3 = np.array([[110, 372]])
             if kpoints1.shape[0] <= 400:
                 continue
-            print(f'kpoints1: {kpoints1.shape}, kpoints3: {kpoints3.shape}')
             # Convert to 3D points
             depth_image = read_image(v[i][3])  # 读取深度图
-            depth_image = cv2.resize(depth_image, (depth_image.shape[1] // 3, depth_image.shape[0] // 3), interpolation=cv2.INTER_NEAREST)  # 调整深度图大小
-            
-            model_3dpoints, remove_list, camera_3dpoints_3DS, point_valid_list, depth_list = pixel_to_world(
+            depth_image = cv2.resize(depth_image, (depth_image.shape[1] // 3, depth_image.shape[0] // 3), interpolation=cv2.INTER_NEAREST)  # 调整深度图size
+            model_3dpoints_3DS, remove_list, camera_3dpoints_3DS, point_valid_list = pixel_to_model(
                 kpoints1, depth_image, K1, P1_c2w_3DS, Z_Far
             )
             kpoints1 = np.delete(kpoints1, remove_list, axis=0)
             kpoints3 = np.delete(kpoints3, remove_list, axis=0)
-            print(f'kpoints1: {kpoints1.shape}, kpoints3: {kpoints3.shape}')
-            if model_3dpoints.shape[0] >= 200:
+            if model_3dpoints_3DS.shape[0] >= 200:
                 # Estimate pose
-                success, pose_c2w_3DS, inliners = estimate_pose_PNPRANSAC(model_3dpoints, kpoints3, K3, P1_c2w_3DS, distCoeffs)
+                if is_debug:
+                    logger.info(f'the data base image name: {v[i][0].split("/")[-1]}')
+                success, pose_c2w_3DS, inliners = estimate_pose_PNPRANSAC(model_3dpoints_3DS, kpoints3, K3, P1_c2w_3DS, distCoeffs, is_debug, is_K_equal)
                 if success:
                     current_results = {
                         'inliners': inliners,
-                        'inliners_rate': float(len(inliners)) / float(len(kpoints3)),
+                        'inliners_rate': float(len(inliners)) / float(len(model_3dpoints_3DS)),
                         'points2d': [kpoints1, kpoints3],
-                        'points3d': model_3dpoints,
+                        'points3d': model_3dpoints_3DS,
                         'K': [K1, K3],
                         'depth': v[i],
                         'depth_image': depth_image,  # 保存深度图
@@ -407,14 +410,17 @@ def request_NVLAD_redir(request):
                         'image_name': [sim1],
                         'keypoints': [kpoints1, kpoints3],
                         'image_RGB': [image1, image3],
+                        'data_image_name': v[i][0].split("/")[-1],
                         'qimname': qimname,
                         'camera_3dpoints_3DS': camera_3dpoints_3DS,
                         'point_valid_list': point_valid_list
                     }
                     
-                    update_best_results(current_results, best_results, second_best_results)
+                    is_break = update_best_results(current_results, best_results, second_best_results, inliners_lambda=inliners_lambda)
             
             torch.cuda.empty_cache()
+            if is_accelerate and is_break:
+                break
         
         # Save results
         if best_results['P'] is not None:
@@ -422,65 +428,48 @@ def request_NVLAD_redir(request):
             inliners_3D = best_results['points3d'][best_results['inliners']]
             inliners_2D = best_results['points2d'][1][best_results['inliners']].squeeze()
             best_results['camera_3dpoints_3DS'] = best_results['camera_3dpoints_3DS'][best_results['inliners']]
-            # print inliners world 3D points and pixel 2D points
-            txt_3d = os.path.join(resfolder, 'best_result_3d.txt')
-            txt_2d = os.path.join(resfolder, 'best_result_2d.txt')
-            txt_camera = os.path.join(resfolder, 'best_result_camera_3D.txt')
-            txt_valid = os.path.join(resfolder, 'valid_key_point.txt')
-            save_points_to_file(txt_2d, inliners_2D)
-            save_points_to_file(txt_3d, inliners_3D)
-            save_points_to_file(txt_camera, best_results['camera_3dpoints_3DS'])
-            save_points_to_file(txt_valid, best_results['point_valid_list'])
-            debug_evaluate_pnp_pose(inliners_3D, inliners_2D, best_results['K'][1], best_results['P'][1], tempdebug)
+            if is_debug:
+                # print inliners world 3D points and pixel 2D points
+                if is_write_long_txt:
+                    txt_3d = os.path.join(resfolder, 'best_result_3d.txt')
+                    txt_2d = os.path.join(resfolder, 'best_result_2d.txt')
+                    txt_camera = os.path.join(resfolder, 'best_result_camera_3D.txt')
+                    txt_valid = os.path.join(resfolder, 'valid_key_point.txt')
+
+                    debug_save_points_to_file(txt_2d, inliners_2D)
+                    debug_save_points_to_file(txt_3d, inliners_3D)
+                    debug_save_points_to_file(txt_camera, best_results['camera_3dpoints_3DS'])
+                    debug_save_points_to_file(txt_valid, best_results['point_valid_list'])
+                debug_evaluate_pnp_pose(inliners_3D, inliners_2D, best_results['K'][1], best_results['P'][1])
             # Use PNP to get more accurate pose
-            success, refined_pose = estimate_pose_PNP(
-                inliners_3D, 
-                inliners_2D, 
-                best_results['K'][1], 
-                best_results['P'][0], 
-                distCoeffs
-            )
+            if best_results['origin_shift'] is not None:
+                best_results['P'][1][:3, 3] += best_results['origin_shift']
+            positions[qimname] = best_results['P'][1].tolist()
             
-            if success:
-                best_results['P'][1] = refined_pose
-                if best_results['origin_shift'] is not None:
-                    best_results['P'][1][:3, 3] += best_results['origin_shift']
-                positions[qimname] = refined_pose.tolist()
-            else:
-                positions[qimname] = best_results['P'][1].tolist()
+            save_match_visualization(best_results, second_best_results, resfolder, tempimages, is_debug)
             
-            save_match_visualization(best_results, second_best_results, resfolder, tempimages)
-            
-            if ground_P3 is not None:
+            if is_debug and is_K_equal and ground_P3 is not None:
                 error_metrics = calculate_pose_error(ground_P3, best_results['P'])
-                print(f"Pose error metrics for {qimname}:", error_metrics)
         else:
             default_P = read_pose_3dscanner(v[0][2]) if os.path.exists(v[0][2]) else np.eye(3, 4)
             positions[qimname] = default_P.tolist()
-        if second_best_results['P'] is not None:
+
+        if is_debug and second_best_results['P'] is not None:
             inliners_3D = second_best_results['points3d'][second_best_results['inliners']]
             inliners_2D = second_best_results['points2d'][1][second_best_results['inliners']].squeeze()
             txt_3d = os.path.join(resfolder, 'second_best_result_3d.txt')
             txt_2d = os.path.join(resfolder, 'second_best_result_2d.txt')
-            save_points_to_file(txt_2d, inliners_2D)
-            save_points_to_file(txt_3d, inliners_3D)
-            success, refined_pose = estimate_pose_PNP(
-                inliners_3D, 
-                inliners_2D, 
-                second_best_results['K'][1], 
-                second_best_results['P'][0], 
-                distCoeffs
-            )
-            if success:
-              second_best_results['P'][1] = refined_pose
-              if second_best_results['origin_shift'] is not None:
-                  second_best_results['P'][1][:3, 3] += second_best_results['origin_shift']
-    end = time.time()
-    total_time = end - start_init
+            debug_save_points_to_file(txt_2d, inliners_2D)
+            debug_save_points_to_file(txt_3d, inliners_3D)
+            if second_best_results['origin_shift'] is not None:
+              second_best_results['P'][1][:3, 3] += second_best_results['origin_shift']
+            
+            if is_debug and is_K_equal and ground_P3 is not None:
+                error_metrics = calculate_pose_error(ground_P3, second_best_results['P'])
     
     # Write results to file
     result_txt = os.path.join(resfolder, 'result.txt')
-    write_results_to_file(result_txt, best_results, second_best_results, total_time)
+    write_results_to_file(result_txt, best_results, second_best_results, error_metrics)
     
     return JsonResponse({
         'message': 'Folder Found',

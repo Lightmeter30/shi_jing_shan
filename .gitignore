@@ -4,3 +4,5 @@
 **/__pycache__
 /media
 /accelerated_features
+/debug
+/log
