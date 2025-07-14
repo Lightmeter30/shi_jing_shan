@@ -21,36 +21,83 @@ from .logger import logger
 
 feature_extractor = DISK(max_num_keypoints=2048).eval().to(settings.DEVICE)  # load the extractor
 feature_match = LightGlue(features="disk", depth_confidence=-1, width_confidence=-1).eval().to(settings.DEVICE)
-M_3DS_CV2 = np.array([[0, 1, 0],
-                      [1, 0, 0],
-                      [0, 0, -1]])
 
-def transfer_Pose_from_3DS_to_CV2(P):
+def compute_M_DATASET_TARGET(coordinate, target={'X': 'right', 'Y': 'down', 'Z': 'forward'}):
     '''
-    3DS坐标系 -> OpenCV坐标系
-    P: 3DS坐标系下的位姿 4x4
+    计算数据集坐标系到目标坐标系的转换矩阵M_DATASET_TARGET
+    coordinate: 数据集的坐标系，格式如 {'X': 'right', 'Y': 'up', 'Z': 'forward'}
+    target: 目标坐标系，格式如 {'X': 'right', 'Y': 'down', 'Z': 'forward'}
+    '''
+    # 定义坐标系方向的映射（标准世界坐标系中的单位向量）
+    direction_map = {
+        'right': [1, 0, 0],
+        'left': [-1, 0, 0],
+        'up': [0, 1, 0],
+        'down': [0, -1, 0],
+        'forward': [0, 0, 1],
+        'backward': [0, 0, -1]
+    }
+    
+    # 验证输入
+    required_axes = ['X', 'Y', 'Z']
+    if not all(axis in coordinate for axis in required_axes):
+        raise ValueError("coordinate must contain keys 'X', 'Y', 'Z'")
+    if not all(axis in target for axis in required_axes):
+        raise ValueError("target must contain keys 'X', 'Y', 'Z'")
+    
+    # 构建坐标系矩阵
+    # 每一列代表该坐标系的一个轴在世界坐标系中的方向
+    dataset_matrix = np.array([
+        direction_map[coordinate['X']],  # X轴方向
+        direction_map[coordinate['Y']],  # Y轴方向
+        direction_map[coordinate['Z']]   # Z轴方向
+    ]).T
+    
+    target_matrix = np.array([
+        direction_map[target['X']],
+        direction_map[target['Y']],
+        direction_map[target['Z']]
+    ]).T
+    
+    # 验证坐标系是否正交
+    def is_orthogonal(matrix):
+        return np.allclose(matrix @ matrix.T, np.eye(3))
+    
+    if not is_orthogonal(dataset_matrix):
+        raise ValueError("Dataset coordinate system is not orthogonal")
+    if not is_orthogonal(target_matrix):
+        raise ValueError("Target coordinate system is not orthogonal")
+    
+    M_DATASET_TARGET = dataset_matrix.T @ target_matrix
+    
+    return M_DATASET_TARGET
+
+def transfer_Pose_from_DATASET_to_TARGET(P, M_DATASET_TARGET):
+    '''
+    DATASET坐标系 -> TARGET坐标系
+    P: DATASET坐标系下的位姿 4x4
     '''
     Pose = np.eye(4)
-    Pose[:3, :3] = M_3DS_CV2 @ P[:3, :3] @ M_3DS_CV2.T
-    Pose[:3, 3] = M_3DS_CV2 @ P[:3, 3]
+    Pose[:3, :3] = M_DATASET_TARGET @ P[:3, :3] @ M_DATASET_TARGET.T
+    Pose[:3, 3] = M_DATASET_TARGET @ P[:3, 3]
     return Pose
 
-def transfer_Pose_from_CV2_to_3DS(P):
+def transfer_Pose_from_TARGET_to_DATASET(P, M_DATASET_TARGET):
     '''
-    OpenCV坐标系 -> 3DS坐标系
-    P: OpenCV坐标系下的位姿 4x4
+    TARGET坐标系 -> DATASET坐标系
+    P: TARGET坐标系下的位姿 4x4
     '''
     Pose = np.eye(4)
-    Pose[:3, :3] = M_3DS_CV2.T @ P[:3, :3] @ M_3DS_CV2
-    Pose[:3, 3] = M_3DS_CV2.T @ P[:3, 3]
+    Pose[:3, :3] = M_DATASET_TARGET.T @ P[:3, :3] @ M_DATASET_TARGET
+    Pose[:3, 3] = M_DATASET_TARGET.T @ P[:3, 3]
     return Pose
 
-def transfer_Point_from_3DS_to_CV2(Points):
+def transfer_Point_from_DATASET_to_TARGET(Points, M_DATASET_TARGET):
     '''
-    OpenCV坐标系 -> 3DS坐标系
-    Points: OpenCV坐标系下的点 Nx3
+    TARGET坐标系 -> DATASET坐标系
+    Points: TARGET坐标系下的点 Nx3
     '''
-    return (M_3DS_CV2 @ Points.T).T
+    return (M_DATASET_TARGET @ Points.T).T
 
 def invert_Pose_Matrix(P):
     '''
@@ -173,16 +220,15 @@ def pose_divide(pose):
 points: image1所有的特征点集合(pixel坐标), 是一个shape为N1 x 2的数组
 depth_image: 深度图
 K: 相机内参 3x3
-P_c2w_3DS: 3DS坐标系下的相机位姿4x4 应该是Camera to World
+P_c2w_DATASET: 数据集对应的坐标系下的相机位姿4x4 应该是Camera to World
 返回值:
-world_3dpoints_cv2 Nx3(opencv坐标系下的世界坐标)
+model_3dpoints_DATASET: Nx3(数据集的模型坐标系的kp坐标)
 remove_index_list: 被移除点的索引
-camera_3dpoints_unity Nx4(unity坐标系下的相机坐标)
-points_valid: 有效点 Nx2
-depths: 有效点深度 N
+camera_3dpoints_DATASET: Nx4(数据集的相机坐标系下的kp坐标)
+points_cv2: 筛选过的有效点 Nx2
 '''
 @timer
-def pixel_to_model(kpoints1, depth_image, K1, P_c2w_3DS, Z_Far):
+def pixel_to_model(kpoints1, depth_image, K1, P_c2w_DATASET, Z_Far, coordinate):
     """Process a single image for matching."""
     # 1. 检查深度图
     if depth_image is None:
@@ -204,45 +250,58 @@ def pixel_to_model(kpoints1, depth_image, K1, P_c2w_3DS, Z_Far):
     # 5. 计算深度值
     depths = (depth_values[valid_mask] / 255) * (Z_Far)
     
-    # 6. 获取有效点
+    # 6. 获取有效点 X: right Y: down
     points_cv2 = points_int[valid_mask]
     
-    # 7. 计算相机坐标, 转化为unity相机坐标系
-
-    points_3DS = points_cv2[:, [1, 0]]
-    camera_3dpoints_3DS = np.zeros((len(points_3DS), 4))
-    camera_3dpoints_3DS[:, 0] = (points_3DS[:, 0] - c_x) * depths / f_x
-    camera_3dpoints_3DS[:, 1] = (points_3DS[:, 1] - c_y) * depths / f_y
-    camera_3dpoints_3DS[:, 2] = - depths
-    camera_3dpoints_3DS[:, 3] = 1
-
+    # 7. 完成像素坐标系 -> 图像坐标系的映射关系
+    m = compute_M_DATASET_TARGET(coordinate, target={'X': 'right', 'Y': 'down', 'Z': 'forward'})
+    is_x_negative = is_y_negative = False
+    if abs(m[0,0]) == 1 and abs(m[1,1]) == 1:
+        points_DATASET = points_cv2
+        if m[0, 0] == -1:
+            is_x_negative = True
+        if m[1, 1] == -1:
+            is_y_negative = True
+    else:
+        points_DATASET = points_cv2[:, [1, 0]]
+        if m[0, 1] == -1:
+            is_x_negative = True
+        if m[1, 0] == -1:
+            is_y_negative = True
+    # 8. 像素坐标系 -> 图像坐标系 -> 相机坐标系，使用到了step 7中的映射关系
+    camera_3dpoints_DATASET = np.zeros((len(points_DATASET), 4))
+    camera_3dpoints_DATASET[:, 0] = - (points_DATASET[:, 0] - c_x) * depths / f_x if is_x_negative else (points_DATASET[:, 0] - c_x) * depths / f_x
+    camera_3dpoints_DATASET[:, 1] = - (points_DATASET[:, 1] - c_y) * depths / f_y if is_y_negative else (points_DATASET[:, 1] - c_y) * depths / f_y
+    camera_3dpoints_DATASET[:, 2] = depths if m[2, 2] == 1 else - depths
+    camera_3dpoints_DATASET[:, 3] = 1
     
-    model_3dpoints_3DS = (P_c2w_3DS @ camera_3dpoints_3DS.T).T
-    model_3dpoints_3DS = cv2.convertPointsFromHomogeneous(model_3dpoints_3DS).squeeze()
+    # 9. 相机坐标系 -> 模型坐标系
+    model_3dpoints_DATASET = (P_c2w_DATASET @ camera_3dpoints_DATASET.T).T
+    model_3dpoints_DATASET = cv2.convertPointsFromHomogeneous(model_3dpoints_DATASET).squeeze()
     
 
-    # 11. 记录被移除点的索引
+    # 10. 记录被移除点的索引
     remove_index_list = np.where(~valid_mask)[0].tolist()
     
-    return [model_3dpoints_3DS, remove_index_list, camera_3dpoints_3DS, points_cv2]
+    return [model_3dpoints_DATASET, remove_index_list, camera_3dpoints_DATASET, points_cv2]
 
 '''
 PNPRANSAC算法本身接收一个W2C的位姿作为初始估计, 计算的结果也是W2C的位姿, 最后需要将结果转换为C2W, 即取逆
 points3d: 3d点云 Nx3
 kpoints3: image3的特征点 Nx2
 K3: 相机内参 3x3
-P1: 相机位姿4x4 应该是3DS的C2W
+P1: 相机位姿4x4 应该是DATASET的C2W
 返回值：
 success: 
-pose_c2w_3DS: 相机位姿3x4 应该是对应Unity坐标系下的C2W
+pose_c2w_DATASET: 相机位姿3x4 应该是对应Unity坐标系下的C2W
 inliners: 有效点索引
 '''
 @timer
-def estimate_pose_PNPRANSAC(points3d_3DS, kpoints3, K3, P1_c2w_3DS, distCoeffs=None, is_debug=False, is_K_equal=False):
+def estimate_pose_PNPRANSAC(points3d_DATASET, kpoints3, K3, P1_c2w_DATASET, M_DATASET_TARGET,distCoeffs=None, is_debug=False, is_K_equal=False):
     """Estimate camera pose using PnP."""
-    # 将3DS的C2W转换为opencv的W2C
-    points3d_cv2 = transfer_Point_from_3DS_to_CV2(points3d_3DS)
-    P1_c2w_cv2 = transfer_Pose_from_3DS_to_CV2(P1_c2w_3DS)
+    # 将DATASET的C2W转换为opencv的W2C
+    points3d_cv2 = transfer_Point_from_DATASET_to_TARGET(points3d_DATASET, M_DATASET_TARGET)
+    P1_c2w_cv2 = transfer_Pose_from_DATASET_to_TARGET(P1_c2w_DATASET, M_DATASET_TARGET)
     P1_w2c_cv2 = invert_Pose_Matrix(P1_c2w_cv2)
 
     rot_vec1, _ = cv2.Rodrigues(P1_w2c_cv2[:3, :3])
@@ -264,17 +323,17 @@ def estimate_pose_PNPRANSAC(points3d_3DS, kpoints3, K3, P1_c2w_3DS, distCoeffs=N
         confidence=0.99,
         iterationsCount=100
     )
-    
+
     if success and inliners is not None:
         inliners = inliners.squeeze()
         Rtmp, _ = cv2.Rodrigues(R)
         pose_w2c_cv2 = np.hstack((Rtmp, T))
         pose_w2c_cv2 = np.vstack((pose_w2c_cv2, np.array([0,0,0,1])))
         pose_c2w_cv2 = invert_Pose_Matrix(pose_w2c_cv2)
-        pose_c2w_3DS = transfer_Pose_from_CV2_to_3DS(pose_c2w_cv2)
+        pose_c2w_DATASET = transfer_Pose_from_TARGET_to_DATASET(pose_c2w_cv2, M_DATASET_TARGET)
         if is_debug:
-            logger.info(f'pose_c2w_3DS: {pose_c2w_3DS}')
-        return True, pose_c2w_3DS[:3, :], inliners
+            logger.info(f'pose_c2w_DATASET: {pose_c2w_DATASET}')
+        return True, pose_c2w_DATASET[:3, :], inliners
     
     return False, None, None
 
@@ -283,16 +342,16 @@ PNP算法本身接收一个W2C的位姿作为初始估计, 计算的结果也是
 points3d: 3d点云 Nx3, 基于opencv坐标系
 kpoints3: image3的特征点 Nx2
 K3: 相机内参 3x3
-P1: 相机位姿4x4 应该是3DS的C2W
+P1: 相机位姿4x4 应该是DATASET的C2W
 返回值：
 success: 
-pose_c2w_3DS: 相机位姿3x4 应该是对应3DS坐标系下的C2W
+pose_c2w_DATASET: 相机位姿3x4 应该是对应DATASET坐标系下的C2W
 '''
-def estimate_pose_PNP(points3d_3DS, kpoints3, K3, P1, distCoeffs=None):
+def estimate_pose_PNP(points3d_DATASET, kpoints3, K3, P1, M_DATASET_TARGET,distCoeffs=None):
     """Estimate camera pose using PnP."""
-    # 将3DS的C2W转换为opencv的W2C
-    points3d_cv2 = transfer_Point_from_3DS_to_CV2(points3d_3DS)
-    P1_c2w_cv2 = transfer_Pose_from_3DS_to_CV2(P1)
+    # 将DATASET的C2W转换为opencv的W2C
+    points3d_cv2 = transfer_Point_from_DATASET_to_TARGET(points3d_DATASET, M_DATASET_TARGET)
+    P1_c2w_cv2 = transfer_Pose_from_DATASET_to_TARGET(P1, M_DATASET_TARGET)
     P1_w2c_cv2 = invert_Pose_Matrix(P1_c2w_cv2)
 
     rot_vec1, _ = cv2.Rodrigues(P1_w2c_cv2[:3, :3])
@@ -310,8 +369,8 @@ def estimate_pose_PNP(points3d_3DS, kpoints3, K3, P1, distCoeffs=None):
         pose = np.hstack((Rtmp, T))
         pose_w2c_cv2 = np.vstack((pose, np.array([0,0,0,1])))
         pose_c2w_cv2 = invert_Pose_Matrix(pose_w2c_cv2)
-        pose_c2w_3DS = transfer_Pose_from_CV2_to_3DS(pose_c2w_cv2)
-        return True, pose_c2w_3DS[:3, :]
+        pose_c2w_DATASET = transfer_Pose_from_TARGET_to_DATASET(pose_c2w_cv2, M_DATASET_TARGET)
+        return True, pose_c2w_DATASET[:3, :]
     return False, None
 
 def update_best_results(current_results, best_results, second_best_results, inliners_lambda, best_inliners_rate_window=0.1):
@@ -462,19 +521,19 @@ def debug_save_points_to_file(txt, points):
         for i in range(points.shape[0]):
             f.write(' '.join(map(str, points[i])) + '\n')
 
-def debug_evaluate_pnp_pose(model_3dpoints_3DS, points_2d, K, pose_matrix):
+def debug_evaluate_pnp_pose(model_3dpoints_DATASET, points_2d, K, pose_matrix, M_DADASET_TARGET):
     """
     直接评估PnP求解的位姿
     
     参数:
-        model_3dpoints_3DS: 已知的3D点 (N, 3)
+        model_3dpoints_DATASET: 已知的3D点 (N, 3)
         points_2d: 对应的2D图像点 (N, 2) 
         K: 相机内参
-        pose_matrix: PnP求解的位姿矩阵 c2w 3DS
+        pose_matrix: PnP求解的位姿矩阵 c2w DATASET
     """
-    points3d_cv2 = transfer_Point_from_3DS_to_CV2(model_3dpoints_3DS)
-    pose_w2c_3ds = invert_Pose_Matrix(pose_matrix)
-    pose_w2c_cv2 = transfer_Pose_from_3DS_to_CV2(pose_w2c_3ds)
+    points3d_cv2 = transfer_Point_from_DATASET_to_TARGET(model_3dpoints_DATASET, M_DADASET_TARGET)
+    pose_w2c_DATASET = invert_Pose_Matrix(pose_matrix)
+    pose_w2c_cv2 = transfer_Pose_from_DATASET_to_TARGET(pose_w2c_DATASET, M_DADASET_TARGET)
     # 构建投影矩阵
     T = pose_w2c_cv2
     P = K @ T[:3, :]
@@ -490,5 +549,3 @@ def debug_evaluate_pnp_pose(model_3dpoints_3DS, points_2d, K, pose_matrix):
     # 计算重投影误差
     reprojection_errors = np.linalg.norm(proj_2d - points_2d_new, axis=1)
     logger.info(f"重投影误差: mean: {np.mean(reprojection_errors)}; median: {np.median(reprojection_errors)}; max error: {np.max(reprojection_errors)}; min error: {np.min(reprojection_errors)}")
-
-        
