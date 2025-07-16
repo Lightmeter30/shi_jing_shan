@@ -15,6 +15,8 @@ from utils.draw import *
 from utils.nvlad_utils import *
 from utils.times import timer
 from utils.logger import logger
+from utils.vggt_utils import *
+
 from datetime import datetime
 import os, re
 import subprocess
@@ -23,10 +25,83 @@ import cv2, numpy
 import time
 from lightglue.utils import read_image, resize_image
 import torch
-import copy
+import zipfile
+import tarfile
+
 
 from accelerated_features.modules.xfeat import XFeat
 # from accelerated_features.modules.xfeat import XFeat
+
+@csrf_exempt
+def upload_datasets(request):
+    # if request.method == 'OPTIONS':
+    #      # 响应预检请求
+    #     response = JsonResponse({'message': 'OK'})
+    #     response['Access-Control-Allow-Origin'] = '*'
+    #     response['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+    #     response['Access-Control-Allow-Headers'] = 'Content-Type'
+    #     return response
+
+    if request.method == 'POST':
+        datasets = request.FILES.getlist('datasets')
+        base_dir = os.path.abspath(settings.MEDIA_ROOT)
+        target_path = os.path.abspath(os.path.join(base_dir, 'images/'))
+        if not target_path.startswith(base_dir):
+            return JsonResponse({'error': '不允许的路径'}, status=403)
+        if not datasets:
+            return JsonResponse({'error': '缺少 datasets 参数'}, status=400)
+        results = []
+        for dataset in datasets:
+            file_name = dataset.name
+            base_name, ext = os.path.splitext(file_name)
+            if ext in ['.gz', '.tgz'] and file_name.endswith('.tar.gz'):
+                base_name = file_name.replace('.tar.gz', '')
+            elif ext == '.gz' and file_name.endswith('.tgz'):
+                base_name = file_name.replace('.tgz', '')
+            
+            # 解压目标子目录（与文件同名）
+            file_extract_dir = os.path.join(target_path, base_name)
+
+            if os.path.exists(file_extract_dir):
+                results.append({
+                    'filename': file_name,
+                    'status': f'数据集 {base_name} 已存在, 请重命名后上传',
+                })
+                continue
+
+            os.makedirs(file_extract_dir, exist_ok=True)
+
+            # 保存上传的压缩包为临时文件
+            temp_path = os.path.join(target_path, file_name)
+            # 保存上传的压缩包
+            with open(temp_path, 'wb+') as f:
+                for chunk in dataset.chunks():
+                    f.write(chunk)
+            # 解压缩
+            try:
+                if file_name.endswith('.zip'):
+                    with zipfile.ZipFile(temp_path, 'r') as zip_ref:
+                        zip_ref.extractall(file_extract_dir)
+                    status = '解压成功'
+                elif file_name.endswith(('.tar', '.tar.gz', '.tgz')):
+                    with tarfile.open(temp_path, 'r:*') as tar_ref:
+                        tar_ref.extractall(file_extract_dir)
+                    status = '解压成功'
+                else:
+                    status = '不支持的格式'
+            except Exception as e:
+                status = f'解压失败: {str(e)}'
+            finally:
+                os.remove(temp_path)  # 清理临时文件
+            
+            results.append({
+                'filename': file_name,
+                'status': status,
+            })
+        
+        return JsonResponse({'message': '批量处理完成', 'results': results})
+    return JsonResponse({'error': '仅支持 POST 请求'}, status=405)
+
 
 def upload_video(request):
     if request.method == 'POST':
@@ -184,7 +259,8 @@ def request_NVLAD(request):
 
 @csrf_exempt
 def test_read_image(request):
-  depth_image = Image.open('/home/takune/relocation/shi_jing_shan/media/images/sjs1009/depth/frame-000000.depth.jpg')
+  # Django Image based on PIL
+  depth_image = Image.open('/home/takune/relocation/shi_jing_shan/media/images/gxl_03/depth/frame-000000.depth.jpg')
   if depth_image is None:
     raise ValueError('Could not read the depth image.')
   d_width, d_height = depth_image.size
@@ -198,7 +274,7 @@ def test_read_image(request):
   depth_image.save('/home/takune/relocation/shi_jing_shan/media/test/test.jpg')
   # 输出深度图的基本信息
   print(f"Depth image shape: {depth_image.size}")
-  print(f"Depth image shape: {depth_image.getpixel((1800,1439))}")
+  print(f"Depth image shape: {depth_image.getpixel((470,630))}")
   
   return JsonResponse({'success': 'test_image_ok'}, status=200)
 
@@ -240,7 +316,11 @@ def request_NVLAD_redir(request):
     dataset_K = np.array([[dataset_info['intrinsic']['fx'], 0, dataset_info['intrinsic']['cx']],
                           [0., dataset_info['intrinsic']['fy'], dataset_info['intrinsic']['cy']],
                           [0, 0, 1]])
-    M_DATASET_TARGET = compute_M_DATASET_TARGET(dataset_info['coordinate'])
+    # TODO: 后续TARGET最好作为参数从前端传过来
+    TARGET = {'X': 'right', 'Y': 'up', 'Z': 'forward'}
+    M_DATASET_CV2 = compute_M_A2B(dataset_info['coordinate'])
+    M_CV2_TARGET = compute_M_A2B({'X': 'right', 'Y': 'down', 'Z': 'forward'}, TARGET)
+    M_DATASET_TARGET = compute_M_A2B(dataset_info['coordinate'], TARGET)
     '''
     target_pose = os.path.join(exter_loc, 'frame-000184.pose.txt')
     target = read_pose_3dscanner(target_pose)
@@ -361,7 +441,7 @@ def request_NVLAD_redir(request):
         for i in range(min(len(v), 20)):
             # Process source image
             sim1 = v[i][0]
-            image1 = process_single_image(sim1, H, W)
+            image1 = process_single_image(sim1, H, W, is_resize = dataset_info["type"] != "VGGT")
             K1 = read_pose_3dscanner(v[i][1])[:, :-1] if os.path.exists(v[i][1]) else dataset_K
             K1[0, 0] *= 1/3
             K1[1, 1] *= 1/3
@@ -386,19 +466,31 @@ def request_NVLAD_redir(request):
             kpoints3 = np.floor(kpoints3)
             if kpoints1.shape[0] <= 400:
                 continue
-            # Convert to 3D points
-            depth_image = read_image(v[i][3])  # 读取深度图
-            depth_image = cv2.resize(depth_image, (depth_image.shape[1] // 3, depth_image.shape[0] // 3), interpolation=cv2.INTER_NEAREST)  # 调整深度图size
-            model_3dpoints_DATASET, remove_list, camera_3dpoints_DATASET, point_valid_list = pixel_to_model(
-                kpoints1, depth_image, K1, P1_c2w_DATASET, dataset_info['Z_Far'], dataset_info["coordinate"]
+            if dataset_info["type"] == "VGGT":
+                # TODO:
+                pointmap_loc = os.path.join(settings.MEDIA_ROOT, 'images/', os.path.join(dataset_loc, 'pointmap'))
+                image_index = os.path.basename(sim1).split('.')[0]
+                points_int = kpoints1.astype(np.int32)
+                model_3dpoints_DATASET = read_point_map_from_vggt(points_int, image_index, pointmap_loc)
+                # 这一行只是为了不报错写的
+                camera_3dpoints_DATASET = model_3dpoints_DATASET
+                point_valid_list = points_int
+                depth_image = image1
+            elif dataset_info["type"] == "3DS":
+                # Convert to 3D points
+                depth_image = read_image(v[i][3])  # 读取深度图
+                depth_image = cv2.resize(depth_image, (depth_image.shape[1] // 3, depth_image.shape[0] // 3), interpolation=cv2.INTER_NEAREST)  # 调整深度图size
+                model_3dpoints_DATASET, remove_list, camera_3dpoints_DATASET, point_valid_list = pixel_to_model(
+                kpoints1, depth_image, K1, P1_c2w_DATASET, dataset_info['Z_Far'], M_DATASET_CV2
             )
-            kpoints1 = np.delete(kpoints1, remove_list, axis=0)
-            kpoints3 = np.delete(kpoints3, remove_list, axis=0)
+                kpoints1 = np.delete(kpoints1, remove_list, axis=0)
+                kpoints3 = np.delete(kpoints3, remove_list, axis=0)
+            
             if model_3dpoints_DATASET.shape[0] >= 200:
                 # Estimate pose
                 if is_debug:
                     logger.info(f'the data base image name: {v[i][0].split("/")[-1]}')
-                success, pose_c2w_DATASET, inliners = estimate_pose_PNPRANSAC(model_3dpoints_DATASET, kpoints3, K3, P1_c2w_DATASET, M_DATASET_TARGET,distCoeffs, is_debug, is_K_equal)
+                success, pose_c2w_target, inliners = estimate_pose_PNPRANSAC(model_3dpoints_DATASET, kpoints3, K3, P1_c2w_DATASET, M_DATASET_CV2, M_CV2_TARGET,distCoeffs, is_debug, is_K_equal)
                 if success:
                     current_results = {
                         'inliners': inliners,
@@ -408,7 +500,7 @@ def request_NVLAD_redir(request):
                         'K': [K1, K3],
                         'depth': v[i],
                         'depth_image': depth_image,  # 保存深度图
-                        'P': [P1_c2w_DATASET, pose_c2w_DATASET],
+                        'P': [P1_c2w_DATASET, pose_c2w_target],
                         'origin_shift': p1_shift,
                         'image_name': [sim1],
                         'keypoints': [kpoints1, kpoints3],
@@ -443,7 +535,7 @@ def request_NVLAD_redir(request):
                     debug_save_points_to_file(txt_3d, inliners_3D)
                     debug_save_points_to_file(txt_camera, best_results['camera_3dpoints_DATASET'])
                     debug_save_points_to_file(txt_valid, best_results['point_valid_list'])
-                debug_evaluate_pnp_pose(inliners_3D, inliners_2D, best_results['K'][1], best_results['P'][1], M_DATASET_TARGET)
+                debug_evaluate_pnp_pose(inliners_3D, inliners_2D, best_results['K'][1], best_results['P'][1], M_DATASET_CV2, M_CV2_TARGET)
             # Use PNP to get more accurate pose
             if best_results['origin_shift'] is not None:
                 best_results['P'][1][:3, 3] += best_results['origin_shift']
@@ -452,7 +544,7 @@ def request_NVLAD_redir(request):
             save_match_visualization(best_results, second_best_results, resfolder, tempimages, is_debug)
             
             if is_debug and is_K_equal and ground_P3 is not None:
-                error_metrics = calculate_pose_error(ground_P3, best_results['P'])
+                error_metrics = calculate_pose_error(ground_P3, best_results['P'], M_DATASET_TARGET)
         else:
             default_P = read_pose_3dscanner(v[0][2]) if os.path.exists(v[0][2]) else np.eye(3, 4)
             positions[qimname] = default_P.tolist()
@@ -468,7 +560,7 @@ def request_NVLAD_redir(request):
               second_best_results['P'][1][:3, 3] += second_best_results['origin_shift']
             
             if is_debug and is_K_equal and ground_P3 is not None:
-                error_metrics = calculate_pose_error(ground_P3, second_best_results['P'])
+                error_metrics = calculate_pose_error(ground_P3, second_best_results['P'], M_DATASET_TARGET)
     
     # Write results to file
     result_txt = os.path.join(resfolder, 'result.txt')

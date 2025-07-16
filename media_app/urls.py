@@ -1,10 +1,11 @@
 # media_app/urls.py
 from django.urls import path
 
-from .views import upload_video, upload_image, upload_multiple_images, upload_multiple_videos, request_colmap_auto, \
+from .views import upload_datasets,upload_video, upload_image, upload_multiple_images, upload_multiple_videos, request_colmap_auto, \
     request_colmap, request_NVLAD, request_NVLAD_redir, test_read_image
 
 urlpatterns = [
+    path('upload_datasets/', upload_datasets, name='upload_datasets'),
     path('upload_video/', upload_video, name='upload_video'),
     path('upload_image/', upload_image, name='upload_image'),
     path('upload_multiple_images/',
@@ -18,5 +19,4 @@ urlpatterns = [
     path('request_NVLAD/', request_NVLAD, name='request_NVLAD'),
     path('request_NVLAD_redir/', request_NVLAD_redir, name='request_NVLAD_redir'),
     path('test_read_image/', test_read_image, name='test_read_image')
-
 ]

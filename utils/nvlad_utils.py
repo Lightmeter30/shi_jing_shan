@@ -4,6 +4,7 @@ import time
 import json
 import numpy as np
 import cv2
+import random
 
 from PIL import Image
 from django.core.files.storage import FileSystemStorage
@@ -22,11 +23,11 @@ from .logger import logger
 feature_extractor = DISK(max_num_keypoints=2048).eval().to(settings.DEVICE)  # load the extractor
 feature_match = LightGlue(features="disk", depth_confidence=-1, width_confidence=-1).eval().to(settings.DEVICE)
 
-def compute_M_DATASET_TARGET(coordinate, target={'X': 'right', 'Y': 'down', 'Z': 'forward'}):
+def compute_M_A2B(A, B={'X': 'right', 'Y': 'down', 'Z': 'forward'}):
     '''
-    计算数据集坐标系到目标坐标系的转换矩阵M_DATASET_TARGET
-    coordinate: 数据集的坐标系，格式如 {'X': 'right', 'Y': 'up', 'Z': 'forward'}
-    target: 目标坐标系，格式如 {'X': 'right', 'Y': 'down', 'Z': 'forward'}
+    计算数据集坐标系到目标坐标系的转换矩阵M_A2B
+    A: 初始坐标系，格式如 {'X': 'right', 'Y': 'up', 'Z': 'forward'}
+    B: 目标坐标系，格式如 {'X': 'right', 'Y': 'down', 'Z': 'forward'}
     '''
     # 定义坐标系方向的映射（标准世界坐标系中的单位向量）
     direction_map = {
@@ -40,23 +41,23 @@ def compute_M_DATASET_TARGET(coordinate, target={'X': 'right', 'Y': 'down', 'Z':
     
     # 验证输入
     required_axes = ['X', 'Y', 'Z']
-    if not all(axis in coordinate for axis in required_axes):
-        raise ValueError("coordinate must contain keys 'X', 'Y', 'Z'")
-    if not all(axis in target for axis in required_axes):
+    if not all(axis in A for axis in required_axes):
+        raise ValueError("A must contain keys 'X', 'Y', 'Z'")
+    if not all(axis in B for axis in required_axes):
         raise ValueError("target must contain keys 'X', 'Y', 'Z'")
     
     # 构建坐标系矩阵
     # 每一列代表该坐标系的一个轴在世界坐标系中的方向
     dataset_matrix = np.array([
-        direction_map[coordinate['X']],  # X轴方向
-        direction_map[coordinate['Y']],  # Y轴方向
-        direction_map[coordinate['Z']]   # Z轴方向
+        direction_map[A['X']],  # X轴方向
+        direction_map[A['Y']],  # Y轴方向
+        direction_map[A['Z']]   # Z轴方向
     ]).T
     
     target_matrix = np.array([
-        direction_map[target['X']],
-        direction_map[target['Y']],
-        direction_map[target['Z']]
+        direction_map[B['X']],
+        direction_map[B['Y']],
+        direction_map[B['Z']]
     ]).T
     
     # 验证坐标系是否正交
@@ -64,40 +65,40 @@ def compute_M_DATASET_TARGET(coordinate, target={'X': 'right', 'Y': 'down', 'Z':
         return np.allclose(matrix @ matrix.T, np.eye(3))
     
     if not is_orthogonal(dataset_matrix):
-        raise ValueError("Dataset coordinate system is not orthogonal")
+        raise ValueError("Dataset A system is not orthogonal")
     if not is_orthogonal(target_matrix):
-        raise ValueError("Target coordinate system is not orthogonal")
+        raise ValueError("Target A system is not orthogonal")
     
-    M_DATASET_TARGET = dataset_matrix.T @ target_matrix
+    M_A2B = dataset_matrix.T @ target_matrix
     
-    return M_DATASET_TARGET
+    return M_A2B
 
-def transfer_Pose_from_DATASET_to_TARGET(P, M_DATASET_TARGET):
+def transfer_Pose_from_A2B(P, M_A2B):
     '''
-    DATASET坐标系 -> TARGET坐标系
-    P: DATASET坐标系下的位姿 4x4
+    A坐标系 -> B坐标系
+    P: A坐标系下的位姿 4x4
     '''
     Pose = np.eye(4)
-    Pose[:3, :3] = M_DATASET_TARGET @ P[:3, :3] @ M_DATASET_TARGET.T
-    Pose[:3, 3] = M_DATASET_TARGET @ P[:3, 3]
+    Pose[:3, :3] = M_A2B @ P[:3, :3] @ M_A2B.T
+    Pose[:3, 3] = M_A2B @ P[:3, 3]
     return Pose
 
-def transfer_Pose_from_TARGET_to_DATASET(P, M_DATASET_TARGET):
+def transfer_Pose_from_B2A(P, M_A2B):
     '''
-    TARGET坐标系 -> DATASET坐标系
-    P: TARGET坐标系下的位姿 4x4
+    B坐标系 -> A坐标系
+    P: B坐标系下的位姿 4x4
     '''
     Pose = np.eye(4)
-    Pose[:3, :3] = M_DATASET_TARGET.T @ P[:3, :3] @ M_DATASET_TARGET
-    Pose[:3, 3] = M_DATASET_TARGET.T @ P[:3, 3]
+    Pose[:3, :3] = M_A2B.T @ P[:3, :3] @ M_A2B
+    Pose[:3, 3] = M_A2B.T @ P[:3, 3]
     return Pose
 
-def transfer_Point_from_DATASET_to_TARGET(Points, M_DATASET_TARGET):
+def transfer_Point_from_A2B(Points, M_A2B):
     '''
-    TARGET坐标系 -> DATASET坐标系
-    Points: TARGET坐标系下的点 Nx3
+    A坐标系 -> B坐标系
+    Points: A坐标系下的点 Nx3
     '''
-    return (M_DATASET_TARGET @ Points.T).T
+    return (M_A2B @ Points.T).T
 
 def invert_Pose_Matrix(P):
     '''
@@ -175,7 +176,7 @@ def process_predictions(predictions_file, intri_loc, exter_loc, depth_loc):
     
     return pred_imgs
 
-def process_single_image(image_path, H=640, W=480):
+def process_single_image(image_path, H=640, W=480, is_resize = True):
     """Process a single image for matching."""
     image = read_image(image_path)
     image = image_transform(image)
@@ -185,7 +186,8 @@ def process_single_image(image_path, H=640, W=480):
     image = cv2.GaussianBlur(image, (3, 3), 0)
     # Convert back to 3 channels by duplicating grayscale values
     image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    image, _ = resize_image(image, (H, W))
+    if is_resize:
+        image, _ = resize_image(image, (H, W))
     image = np.uint8(image)
     return image
 
@@ -228,7 +230,7 @@ camera_3dpoints_DATASET: Nx4(数据集的相机坐标系下的kp坐标)
 points_cv2: 筛选过的有效点 Nx2
 '''
 @timer
-def pixel_to_model(kpoints1, depth_image, K1, P_c2w_DATASET, Z_Far, coordinate):
+def pixel_to_model(kpoints1, depth_image, K1, P_c2w_DATASET, Z_Far, m):
     """Process a single image for matching."""
     # 1. 检查深度图
     if depth_image is None:
@@ -254,7 +256,7 @@ def pixel_to_model(kpoints1, depth_image, K1, P_c2w_DATASET, Z_Far, coordinate):
     points_cv2 = points_int[valid_mask]
     
     # 7. 完成像素坐标系 -> 图像坐标系的映射关系
-    m = compute_M_DATASET_TARGET(coordinate, target={'X': 'right', 'Y': 'down', 'Z': 'forward'})
+    # m = compute_M_A2B(coordinate, target={'X': 'right', 'Y': 'down', 'Z': 'forward'})
     is_x_negative = is_y_negative = False
     if abs(m[0,0]) == 1 and abs(m[1,1]) == 1:
         points_DATASET = points_cv2
@@ -297,11 +299,11 @@ pose_c2w_DATASET: 相机位姿3x4 应该是对应Unity坐标系下的C2W
 inliners: 有效点索引
 '''
 @timer
-def estimate_pose_PNPRANSAC(points3d_DATASET, kpoints3, K3, P1_c2w_DATASET, M_DATASET_TARGET,distCoeffs=None, is_debug=False, is_K_equal=False):
+def estimate_pose_PNPRANSAC(points3d_DATASET, kpoints3, K3, P1_c2w_DATASET, M_DATASET_CV2, M_CV2_TARGET ,distCoeffs=None, is_debug=False, is_K_equal=False):
     """Estimate camera pose using PnP."""
     # 将DATASET的C2W转换为opencv的W2C
-    points3d_cv2 = transfer_Point_from_DATASET_to_TARGET(points3d_DATASET, M_DATASET_TARGET)
-    P1_c2w_cv2 = transfer_Pose_from_DATASET_to_TARGET(P1_c2w_DATASET, M_DATASET_TARGET)
+    points3d_cv2 = transfer_Point_from_A2B(points3d_DATASET, M_DATASET_CV2)
+    P1_c2w_cv2 = transfer_Pose_from_A2B(P1_c2w_DATASET, M_DATASET_CV2)
     P1_w2c_cv2 = invert_Pose_Matrix(P1_c2w_cv2)
 
     rot_vec1, _ = cv2.Rodrigues(P1_w2c_cv2[:3, :3])
@@ -330,10 +332,11 @@ def estimate_pose_PNPRANSAC(points3d_DATASET, kpoints3, K3, P1_c2w_DATASET, M_DA
         pose_w2c_cv2 = np.hstack((Rtmp, T))
         pose_w2c_cv2 = np.vstack((pose_w2c_cv2, np.array([0,0,0,1])))
         pose_c2w_cv2 = invert_Pose_Matrix(pose_w2c_cv2)
-        pose_c2w_DATASET = transfer_Pose_from_TARGET_to_DATASET(pose_c2w_cv2, M_DATASET_TARGET)
+        pose_c2w_target = transfer_Pose_from_A2B(pose_c2w_cv2, M_CV2_TARGET)
         if is_debug:
-            logger.info(f'pose_c2w_DATASET: {pose_c2w_DATASET}')
-        return True, pose_c2w_DATASET[:3, :], inliners
+            logger.info(f'pose_c2w_target: {pose_c2w_target}')
+            logger.info(f'M_CV2_TARGET: {M_CV2_TARGET}')
+        return True, pose_c2w_target[:3, :], inliners
     
     return False, None, None
 
@@ -347,11 +350,11 @@ P1: 相机位姿4x4 应该是DATASET的C2W
 success: 
 pose_c2w_DATASET: 相机位姿3x4 应该是对应DATASET坐标系下的C2W
 '''
-def estimate_pose_PNP(points3d_DATASET, kpoints3, K3, P1, M_DATASET_TARGET,distCoeffs=None):
+def estimate_pose_PNP(points3d_DATASET, kpoints3, K3, P1, M_A2B,distCoeffs=None):
     """Estimate camera pose using PnP."""
     # 将DATASET的C2W转换为opencv的W2C
-    points3d_cv2 = transfer_Point_from_DATASET_to_TARGET(points3d_DATASET, M_DATASET_TARGET)
-    P1_c2w_cv2 = transfer_Pose_from_DATASET_to_TARGET(P1, M_DATASET_TARGET)
+    points3d_cv2 = transfer_Point_from_A2B(points3d_DATASET, M_A2B)
+    P1_c2w_cv2 = transfer_Pose_from_A2B(P1, M_A2B)
     P1_w2c_cv2 = invert_Pose_Matrix(P1_c2w_cv2)
 
     rot_vec1, _ = cv2.Rodrigues(P1_w2c_cv2[:3, :3])
@@ -369,7 +372,7 @@ def estimate_pose_PNP(points3d_DATASET, kpoints3, K3, P1, M_DATASET_TARGET,distC
         pose = np.hstack((Rtmp, T))
         pose_w2c_cv2 = np.vstack((pose, np.array([0,0,0,1])))
         pose_c2w_cv2 = invert_Pose_Matrix(pose_w2c_cv2)
-        pose_c2w_DATASET = transfer_Pose_from_TARGET_to_DATASET(pose_c2w_cv2, M_DATASET_TARGET)
+        pose_c2w_DATASET = transfer_Pose_from_B2A(pose_c2w_cv2, M_A2B)
         return True, pose_c2w_DATASET[:3, :]
     return False, None
 
@@ -405,12 +408,25 @@ def update_best_results(current_results, best_results, second_best_results, inli
 @timer
 def save_match_visualization(best_results, second_best_results, resfolder, storage_path, is_debug):
     """Save visualization of matches."""
+    def sample_keypoints(kp1, kp2, num_samples=10):
+        num_matches = kp1.shape[0]
+        if num_matches > num_samples:
+            indices = random.sample(range(num_matches), num_samples)
+            kp1 = kp1[indices]
+            kp2 = kp2[indices]
+        return kp1, kp2
+
     if best_results['P'] is not None:
         if is_debug:
             depth_image = best_results['depth_image']  # 直接使用已经读取的深度图
             cv2.imwrite(os.path.join(storage_path, "best_depth.jpg"), depth_image)
-        inliners_1 = best_results['keypoints'][0][best_results['inliners']]
-        inliners_2 = best_results['keypoints'][1][best_results['inliners']]
+        
+        inliers_idx = best_results['inliners']
+        inliners_1 = best_results['keypoints'][0][inliers_idx]
+        inliners_2 = best_results['keypoints'][1][inliers_idx]
+
+        # 🎯 随机采样 10 个内点对
+        inliners_1, inliners_2 = sample_keypoints(inliners_1, inliners_2)
         
         canvas = warp_corners_and_draw_matches(
             inliners_1, 
@@ -437,9 +453,14 @@ def save_match_visualization(best_results, second_best_results, resfolder, stora
     if is_debug and second_best_results['P'] is not None:
         depth_image = second_best_results['depth_image']  # 直接使用已经读取的深度图
         cv2.imwrite(os.path.join(storage_path, "second_best_depth.jpg"), depth_image)
-        inliners_1 = second_best_results['keypoints'][0][second_best_results['inliners']]
-        inliners_2 = second_best_results['keypoints'][1][second_best_results['inliners']]
-        
+
+        inliers_idx = second_best_results['inliners']
+        inliners_1 = second_best_results['keypoints'][0][inliers_idx]
+        inliners_2 = second_best_results['keypoints'][1][inliers_idx]
+
+        # 🎯 同样采样 10 个内点对
+        inliners_1, inliners_2 = sample_keypoints(inliners_1, inliners_2)
+
         canvas = warp_corners_and_draw_matches(
             inliners_1,
             inliners_2,
@@ -459,8 +480,9 @@ def save_match_visualization(best_results, second_best_results, resfolder, stora
         )
             
 @timer
-def calculate_pose_error(ground_P3, best_P):
+def calculate_pose_error(ground_P3, best_P, M_DATASET_TARGET):
     """Calculate pose estimation error metrics."""
+    ground_P3 = transfer_Pose_from_A2B(ground_P3, M_DATASET_TARGET)
     R3 = ground_P3[:3, :3]
     R3_qim = best_P[1][:3, :3]
     residuals = ground_P3 - best_P[1]
@@ -521,7 +543,7 @@ def debug_save_points_to_file(txt, points):
         for i in range(points.shape[0]):
             f.write(' '.join(map(str, points[i])) + '\n')
 
-def debug_evaluate_pnp_pose(model_3dpoints_DATASET, points_2d, K, pose_matrix, M_DADASET_TARGET):
+def debug_evaluate_pnp_pose(model_3dpoints_DATASET, points_2d, K, pose_matrix, M_DATASET_CV2 ,M_CV2_TARGET):
     """
     直接评估PnP求解的位姿
     
@@ -529,11 +551,11 @@ def debug_evaluate_pnp_pose(model_3dpoints_DATASET, points_2d, K, pose_matrix, M
         model_3dpoints_DATASET: 已知的3D点 (N, 3)
         points_2d: 对应的2D图像点 (N, 2) 
         K: 相机内参
-        pose_matrix: PnP求解的位姿矩阵 c2w DATASET
+        pose_matrix: PnP求解的位姿矩阵 c2w TARGET
     """
-    points3d_cv2 = transfer_Point_from_DATASET_to_TARGET(model_3dpoints_DATASET, M_DADASET_TARGET)
-    pose_w2c_DATASET = invert_Pose_Matrix(pose_matrix)
-    pose_w2c_cv2 = transfer_Pose_from_DATASET_to_TARGET(pose_w2c_DATASET, M_DADASET_TARGET)
+    points3d_cv2 = transfer_Point_from_A2B(model_3dpoints_DATASET, M_DATASET_CV2)
+    pose_w2c_TARGET = invert_Pose_Matrix(pose_matrix)
+    pose_w2c_cv2 = transfer_Pose_from_B2A(pose_w2c_TARGET, M_CV2_TARGET)
     # 构建投影矩阵
     T = pose_w2c_cv2
     P = K @ T[:3, :]
