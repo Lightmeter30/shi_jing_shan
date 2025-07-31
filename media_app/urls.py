@@ -2,7 +2,7 @@
 from django.urls import path
 
 from .views import upload_datasets,upload_video, upload_image, upload_multiple_images, upload_multiple_videos, request_colmap_auto, \
-    request_colmap, request_NVLAD, request_NVLAD_redir, test_read_image
+    request_colmap, request_NVLAD, request_NVLAD_redir, test_read_image, get_scence_list, get_config_by_key, delete_scence
 
 urlpatterns = [
     path('upload_datasets/', upload_datasets, name='upload_datasets'),
@@ -18,5 +18,8 @@ urlpatterns = [
     path('request_colmap/', request_colmap, name='request_colmap'),
     path('request_NVLAD/', request_NVLAD, name='request_NVLAD'),
     path('request_NVLAD_redir/', request_NVLAD_redir, name='request_NVLAD_redir'),
-    path('test_read_image/', test_read_image, name='test_read_image')
+    path('test_read_image/', test_read_image, name='test_read_image'),
+    path('get_scence_list/', get_scence_list, name='get_scence_list'),
+    path('get_config/', get_config_by_key, name='get_config_by_key'),
+    path('delete_scence/', delete_scence, name='delete_scence'),
 ]

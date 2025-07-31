@@ -1,5 +1,7 @@
 *.sqlite3
 *.png
+*.db
+*.sql
 *.webp
 **/__pycache__
 /media

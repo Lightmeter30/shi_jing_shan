@@ -1,7 +1,7 @@
 import time
 import functools
 from typing import Callable, Any
-from .logger import logger
+from .logger_config import logger
 
 def timer(func: Callable) -> Callable:
     """

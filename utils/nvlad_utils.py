@@ -5,6 +5,7 @@ import json
 import numpy as np
 import cv2
 import random
+import piexif
 
 from PIL import Image
 from django.core.files.storage import FileSystemStorage
@@ -17,8 +18,9 @@ from utils.calib3d import *
 from utils.draw import *
 import copy
 import matplotlib.pyplot as plt
+
 from .times import timer
-from .logger import logger
+from .logger_config import logger
 
 feature_extractor = DISK(max_num_keypoints=2048).eval().to(settings.DEVICE)  # load the extractor
 feature_match = LightGlue(features="disk", depth_confidence=-1, width_confidence=-1).eval().to(settings.DEVICE)
@@ -139,7 +141,7 @@ def save_query_images(images, storage_path, tempquery, camera_matrix=None):
             fs = FileSystemStorage(location=storage_path)
             saved_image = fs.save(image_name, image)
             saved_images.append(
-                save_to_jpg(os.path.join(storage_path, saved_image), 
+                save_to_jpg(os.path.join(storage_path, saved_image),
                            os.path.join(storage_path, image_name)))
             qtxt.write(image_name + '\n')
     
@@ -176,10 +178,34 @@ def process_predictions(predictions_file, intri_loc, exter_loc, depth_loc):
     
     return pred_imgs
 
-def process_single_image(image_path, from_front, H=640, W=480,is_resize = True):
-    """Process a single image for matching."""
+def read_image_and_remove_exif(image_path, rotation):
     image = read_image(image_path)
-    image = image_transform(image, from_front)
+    match rotation:
+        case 1:
+            pass  # 正常方向
+        case 2:
+            image = cv2.flip(image, 1)
+        case 3:
+            image = cv2.rotate(image, cv2.ROTATE_180) 
+        case 4:
+            image = cv2.flip(image, 0) 
+        case 5:
+            image = cv2.flip(image, 1)  
+            image = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)  
+        case 6:
+            image = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        case 7:
+            image = cv2.flip(image, 1)
+            image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)  # 旋转180度后水平翻转
+        case 8:
+            image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+        case _:
+            logger.error(f"Unsupported EXIF orientation: {rotation}. Defaulting to no rotation.")
+    return image
+
+def process_single_image(image_path, exif_rotation, H=640, W=480, is_resize = True):
+    """Process a single image for matching."""
+    image = read_image_and_remove_exif(image_path, exif_rotation)
     # Convert to grayscale but maintain 3 channels
     image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     image = cv2.equalizeHist(image)
@@ -230,7 +256,7 @@ camera_3dpoints_DATASET: Nx4(数据集的相机坐标系下的kp坐标)
 points_cv2: 筛选过的有效点 Nx2
 '''
 @timer
-def pixel_to_model(kpoints1, depth_image, K1, P_c2w_DATASET, Z_Far, m):
+def pixel_to_model(kpoints1, depth_image, K1, P_c2w_DATASET, Z_Far, coordinate):
     """Process a single image for matching."""
     # 1. 检查深度图
     if depth_image is None:
@@ -255,26 +281,33 @@ def pixel_to_model(kpoints1, depth_image, K1, P_c2w_DATASET, Z_Far, m):
     # 6. 获取有效点 X: right Y: down
     points_cv2 = points_int[valid_mask]
     
+    
     # 7. 完成像素坐标系 -> 图像坐标系的映射关系
     # m = compute_M_A2B(coordinate, target={'X': 'right', 'Y': 'down', 'Z': 'forward'})
-    is_x_negative = is_y_negative = False
-    if abs(m[0,0]) == 1 and abs(m[1,1]) == 1:
-        points_DATASET = points_cv2
-        if m[0, 0] == -1:
-            is_x_negative = True
-        if m[1, 1] == -1:
-            is_y_negative = True
-    else:
-        points_DATASET = points_cv2[:, [1, 0]]
-        if m[0, 1] == -1:
-            is_x_negative = True
-        if m[1, 0] == -1:
-            is_y_negative = True
+    match coordinate['X']:
+        case 'right':
+            points_X_DATASET = points_cv2[:, 0] - c_x
+        case 'left':
+            points_X_DATASET = c_x - points_cv2[:, 0]
+        case 'up':
+            points_X_DATASET = c_x - points_cv2[:, 1]
+        case 'down':
+            points_X_DATASET = points_cv2[:, 1] - c_x
+    match coordinate['Y']:
+        case 'right':
+            points_Y_DATASET = points_cv2[:, 0] - c_y
+        case 'left':
+            points_Y_DATASET = c_y - points_cv2[:, 0]
+        case 'up':
+            points_Y_DATASET = c_y - points_cv2[:, 1]
+        case 'down':
+            points_Y_DATASET = points_cv2[:, 1] - c_y
+    
     # 8. 像素坐标系 -> 图像坐标系 -> 相机坐标系，使用到了step 7中的映射关系
-    camera_3dpoints_DATASET = np.zeros((len(points_DATASET), 4))
-    camera_3dpoints_DATASET[:, 0] = - (points_DATASET[:, 0] - c_x) * depths / f_x if is_x_negative else (points_DATASET[:, 0] - c_x) * depths / f_x
-    camera_3dpoints_DATASET[:, 1] = - (points_DATASET[:, 1] - c_y) * depths / f_y if is_y_negative else (points_DATASET[:, 1] - c_y) * depths / f_y
-    camera_3dpoints_DATASET[:, 2] = depths if m[2, 2] == 1 else - depths
+    camera_3dpoints_DATASET = np.zeros((len(points_cv2), 4))
+    camera_3dpoints_DATASET[:, 0] = points_X_DATASET * depths / f_x
+    camera_3dpoints_DATASET[:, 1] = points_Y_DATASET * depths / f_y
+    camera_3dpoints_DATASET[:, 2] = depths if coordinate['Z'] == 'forward' else - depths
     camera_3dpoints_DATASET[:, 3] = 1
     
     # 9. 相机坐标系 -> 模型坐标系
@@ -299,7 +332,7 @@ pose_c2w_DATASET: 相机位姿3x4 应该是对应Unity坐标系下的C2W
 inliners: 有效点索引
 '''
 @timer
-def estimate_pose_PNPRANSAC(points3d_DATASET, kpoints3, K3, P1_c2w_DATASET, M_DATASET_CV2, M_CV2_TARGET ,distCoeffs=None, is_debug=False, is_K_equal=False):
+def estimate_pose_PNPRANSAC(points3d_DATASET, kpoints3, K3, P1_c2w_DATASET, M_DATASET_CV2, M_CV2_TARGET, UNITY_ROTATION_MATRIX, distCoeffs=None, is_debug=False, is_K_equal=False):
     """Estimate camera pose using PnP."""
     # 将DATASET的C2W转换为opencv的W2C
     points3d_cv2 = transfer_Point_from_A2B(points3d_DATASET, M_DATASET_CV2)
@@ -309,8 +342,8 @@ def estimate_pose_PNPRANSAC(points3d_DATASET, kpoints3, K3, P1_c2w_DATASET, M_DA
     rot_vec1, _ = cv2.Rodrigues(P1_w2c_cv2[:3, :3])
     shift1 = copy.deepcopy(P1_w2c_cv2[:3, 3:])
 
-    if is_K_equal:
-        K3[0, 2], K3[1, 2] = K3[1, 2], K3[0, 2]
+    # if is_K_equal:
+    #     K3[0, 2], K3[1, 2] = K3[1, 2], K3[0, 2]
     
     kpoints3_new = kpoints3
     # kpoints3_new = kpoints3[:, [1, 0]]
@@ -321,7 +354,7 @@ def estimate_pose_PNPRANSAC(points3d_DATASET, kpoints3, K3, P1_c2w_DATASET, M_DA
         rvec=rot_vec1,
         tvec=shift1,
         # useExtrinsicGuess=False,
-        reprojectionError=4,
+        reprojectionError=8,
         confidence=0.99,
         iterationsCount=100
     )
@@ -331,12 +364,15 @@ def estimate_pose_PNPRANSAC(points3d_DATASET, kpoints3, K3, P1_c2w_DATASET, M_DA
         Rtmp, _ = cv2.Rodrigues(R)
         pose_w2c_cv2 = np.hstack((Rtmp, T))
         pose_w2c_cv2 = np.vstack((pose_w2c_cv2, np.array([0,0,0,1])))
-        pose_c2w_cv2 = invert_Pose_Matrix(pose_w2c_cv2)
-        pose_c2w_target = transfer_Pose_from_A2B(pose_c2w_cv2, M_CV2_TARGET)
+        pose_w2c_DATASET = transfer_Pose_from_B2A(pose_w2c_cv2, M_DATASET_CV2)
+        pose_w2c_target = transfer_Pose_from_A2B(pose_w2c_cv2, M_CV2_TARGET)
+        logger.info(f'UNITY_ROTATION_MATRIX: {UNITY_ROTATION_MATRIX}')
+        pose_w2c_target = UNITY_ROTATION_MATRIX @ pose_w2c_target  # 应用EXIF的旋转矩阵 
+        pose_c2w_target = invert_Pose_Matrix(pose_w2c_target)
         if is_debug:
             logger.info(f'pose_c2w_target: {pose_c2w_target}')
             # logger.info(f'M_CV2_TARGET: {M_CV2_TARGET}')
-            # logger.info(f'pose_c2w_3ds: {pose_c2w_3ds}')
+            logger.info(f'pose_c2w_DATASET: {invert_Pose_Matrix(pose_w2c_DATASET)}')
         return True, pose_c2w_target[:3, :], inliners
     
     return False, None, None
@@ -427,7 +463,7 @@ def save_match_visualization(best_results, second_best_results, resfolder, stora
         inliners_2 = best_results['keypoints'][1][inliers_idx]
 
         # 🎯 随机采样 10 个内点对
-        inliners_1, inliners_2 = sample_keypoints(inliners_1, inliners_2)
+        # inliners_1, inliners_2 = sample_keypoints(inliners_1, inliners_2)
         
         canvas = warp_corners_and_draw_matches(
             inliners_1, 
@@ -435,8 +471,8 @@ def save_match_visualization(best_results, second_best_results, resfolder, stora
             best_results['image_RGB'][0],
             best_results['image_RGB'][1]
         )
-        kp_img1 = draw_keypoints(best_results['image_RGB'][0], inliners_1)
-        kp_img2 = draw_keypoints(best_results['image_RGB'][1], inliners_2)
+        kp_img1 = draw_keypoints(best_results['image_RGB'][0], best_results['keypoints'][0])
+        kp_img2 = draw_keypoints(best_results['image_RGB'][1], best_results['keypoints'][1])
         compression_params = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
         cv2.imwrite(
             os.path.join(resfolder, 'match_' + os.path.basename(best_results['image_name'][0]).split('.')[0] + best_results['qimname'] + '.jpg'),
@@ -460,7 +496,7 @@ def save_match_visualization(best_results, second_best_results, resfolder, stora
         inliners_2 = second_best_results['keypoints'][1][inliers_idx]
 
         # 🎯 同样采样 10 个内点对
-        inliners_1, inliners_2 = sample_keypoints(inliners_1, inliners_2)
+        # inliners_1, inliners_2 = sample_keypoints(inliners_1, inliners_2)
 
         canvas = warp_corners_and_draw_matches(
             inliners_1,
@@ -486,7 +522,7 @@ def calculate_pose_error(ground_P3, best_P, M_DATASET_TARGET):
     ground_P3 = transfer_Pose_from_A2B(ground_P3, M_DATASET_TARGET)
     R3 = ground_P3[:3, :3]
     R3_qim = best_P[1][:3, :3]
-    residuals = ground_P3 - best_P[1]
+    residuals = ground_P3[:3,:4] - best_P[1]
     rot_vec_p3, _ = cv2.Rodrigues(R3)
     rot_vec_qim, _ = cv2.Rodrigues(R3_qim)
     
