@@ -71,7 +71,7 @@ def compute_M_A2B(A, B={'X': 'right', 'Y': 'down', 'Z': 'forward'}):
     
     M_A2B = dataset_matrix.T @ target_matrix
     
-    return M_A2B
+    return M_A2B.T
 
 def transfer_Pose_from_A2B(P, M_A2B):
     '''
@@ -176,10 +176,10 @@ def process_predictions(predictions_file, intri_loc, exter_loc, depth_loc):
     
     return pred_imgs
 
-def process_single_image(image_path, H=640, W=480, is_resize = True):
+def process_single_image(image_path, from_front, H=640, W=480,is_resize = True):
     """Process a single image for matching."""
     image = read_image(image_path)
-    image = image_transform(image)
+    image = image_transform(image, from_front)
     # Convert to grayscale but maintain 3 channels
     image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     image = cv2.equalizeHist(image)
@@ -294,7 +294,7 @@ kpoints3: image3的特征点 Nx2
 K3: 相机内参 3x3
 P1: 相机位姿4x4 应该是DATASET的C2W
 返回值：
-success: 
+success:
 pose_c2w_DATASET: 相机位姿3x4 应该是对应Unity坐标系下的C2W
 inliners: 有效点索引
 '''
@@ -335,7 +335,8 @@ def estimate_pose_PNPRANSAC(points3d_DATASET, kpoints3, K3, P1_c2w_DATASET, M_DA
         pose_c2w_target = transfer_Pose_from_A2B(pose_c2w_cv2, M_CV2_TARGET)
         if is_debug:
             logger.info(f'pose_c2w_target: {pose_c2w_target}')
-            logger.info(f'M_CV2_TARGET: {M_CV2_TARGET}')
+            # logger.info(f'M_CV2_TARGET: {M_CV2_TARGET}')
+            # logger.info(f'pose_c2w_3ds: {pose_c2w_3ds}')
         return True, pose_c2w_target[:3, :], inliners
     
     return False, None, None

@@ -44,12 +44,15 @@ def read_pose_3dscanner(file_path):
     pose = np.array(pose, dtype=np.float32)
     return pose
 
-def image_transform(image: np):
+def image_transform(image: np, from_front: bool):
     (height, width) = image.shape[:2]
     if height >= width:
         return image
     # rotate the src image 90 degrees clockwise
-    rotated_image = cv2.transpose(image)
+    if from_front: 
+        rotated_image = cv2.transpose(image)
+    else:
+        rotated_image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
     # rotated_image = cv2.flip(rotated_image, 1)
     return rotated_image
 

@@ -322,13 +322,17 @@ def request_NVLAD_redir(request):
     M_CV2_TARGET = compute_M_A2B({'X': 'right', 'Y': 'down', 'Z': 'forward'}, TARGET)
     M_DATASET_TARGET = compute_M_A2B(dataset_info['coordinate'], TARGET)
     '''
-    target_pose = os.path.join(exter_loc, 'frame-000184.pose.txt')
-    target = read_pose_3dscanner(target_pose)
+    target_pose_path = os.path.join(exter_loc, 'frame-000222.pose.txt')
+    target_DATASET = read_pose_3dscanner(target_pose_path)
+    target_DATASET = np.vstack((target_DATASET, np.array([0,0,0,1])))
+    target_CV2 = transfer_Pose_from_A2B(target_DATASET, M_DATASET_CV2)
+    target = transfer_Pose_from_A2B(target_CV2, M_CV2_TARGET)
+
     return JsonResponse({
       'message': 'Folder Found',
       'saved_path': ["/home/takune/relocation/shi_jing_shan/media/nvlabs/gxl_02/color/query_20250521030653_a90b882970/query_folder/image.jpg"],
       'positions': {
-        'image.jpg': target.tolist()
+        'image.jpg': target[:3,:].tolist()
       }
     }, status=200)
     '''
@@ -425,7 +429,7 @@ def request_NVLAD_redir(request):
         inliners_lambda = 1.0 # 调和内点率和内点数的占比
         # Process query image
         qim = os.path.join(tempimages, qimname)
-        image3 = process_single_image(qim, H, W)
+        image3 = process_single_image(qim, True ,H, W)
         if is_debug:
             img = Image.fromarray(image3)
             img.save(os.path.join(tempimages, 'image3.jpg'), "JPEG")
@@ -441,7 +445,7 @@ def request_NVLAD_redir(request):
         for i in range(min(len(v), 20)):
             # Process source image
             sim1 = v[i][0]
-            image1 = process_single_image(sim1, H, W, is_resize = dataset_info["type"] != "VGGT")
+            image1 = process_single_image(sim1, False, H, W, is_resize = dataset_info["type"] != "VGGT")
             K1 = read_pose_3dscanner(v[i][1])[:, :-1] if os.path.exists(v[i][1]) else dataset_K
             K1[0, 0] *= 1/3
             K1[1, 1] *= 1/3
@@ -479,6 +483,7 @@ def request_NVLAD_redir(request):
             elif dataset_info["type"] == "3DS":
                 # Convert to 3D points
                 depth_image = read_image(v[i][3])  # 读取深度图
+                depth_image = image_transform(depth_image, False)
                 depth_image = cv2.resize(depth_image, (depth_image.shape[1] // 3, depth_image.shape[0] // 3), interpolation=cv2.INTER_NEAREST)  # 调整深度图size
                 model_3dpoints_DATASET, remove_list, camera_3dpoints_DATASET, point_valid_list = pixel_to_model(
                 kpoints1, depth_image, K1, P1_c2w_DATASET, dataset_info['Z_Far'], M_DATASET_CV2
