@@ -403,16 +403,17 @@ def request_NVLAD_redir(request):
                           [0, 0, 1]])
     dataset_H = dataset_info['image_size']['height']
     dataset_W = dataset_info['image_size']['width']
+    dataset_EXIF = dataset_info['exif']
     # TODO: 后续TARGET最好作为参数从前端传过来
     TARGET = {'X': 'right', 'Y': 'up', 'Z': 'forward'}
     M_DATASET_CV2 = compute_M_A2B(dataset_info['coordinate'])
     M_CV2_TARGET = compute_M_A2B({'X': 'right', 'Y': 'down', 'Z': 'forward'}, TARGET)
     M_DATASET_TARGET = compute_M_A2B(dataset_info['coordinate'], TARGET)
-    '''
-    target_pose_path = os.path.join(exter_loc, 'frame-000000.pose.txt')
+    # '''
+    target_pose_path = os.path.join(exter_loc, 'frame-000055.pose.txt')
     # target_image_path = os.path.join(img_loc, 'frame-000000.color.jpg')
     target_image_path = '/home/takune/relocation/shi_jing_shan/media/images/gxl_03/color/frame-000000.color.jpg'
-    UNITY_ROTATION_MATRIX = exifori_to_unity_rotation_matrix(target_image_path)
+    UNITY_ROTATION_MATRIX = exifori_to_unity_rotation_matrix(dataset_EXIF)
     target_DATASET = read_pose_3dscanner(target_pose_path)
     target_DATASET = np.vstack((target_DATASET, np.array([0,0,0,1])))
     logger.info(f"target_DATASET: {target_DATASET}")
@@ -426,7 +427,7 @@ def request_NVLAD_redir(request):
         'image.jpg': target[:3,:].tolist()
       }
     }, status=200)
-    #'''
+    # '''
     if req_loc[-1] != '/':
         req_loc = req_loc + '/'
     if src_loc[-1] != '/':
@@ -519,7 +520,7 @@ def request_NVLAD_redir(request):
         # Process query image
         qim = os.path.join(tempimages, qimname)
 
-        image3 = process_single_image(qim, 1,is_resize=False)
+        image3 = process_single_image(qim, dataset_EXIF ,is_resize=False)
         H, W = image3.shape[0], image3.shape[1]
         print(f"image3 H: {H}, W: {W}")
         if is_debug:
@@ -536,16 +537,11 @@ def request_NVLAD_redir(request):
         
         # Process each potential match
         xfeat = XFeat()
-        for i in range(min(len(v), 2)):
+        for i in range(min(len(v), 20)):
             # Process source image
             sim1 = v[i][0]
-            try:
-                exif_rotation = piexif.load(sim1)["0th"][274]  # 获取EXIF的orientation
-            except Exception as e:
-                logger.info(f"the dataset image hasn't EXIF orientation, set to 1")
-                exif_rotation = 1
-            image1 = process_single_image(sim1, exif_rotation, H, W, is_resize = dataset_info["type"] != "VGGT")
-            UNITY_ROTATION_MATRIX = exifori_to_unity_rotation_matrix(sim1)
+            image1 = process_single_image(sim1, dataset_EXIF, H, W, is_resize = dataset_info["type"] != "VGGT")
+            UNITY_ROTATION_MATRIX = exifori_to_unity_rotation_matrix(dataset_EXIF)
             print(f"image1 shape 0: {image1.shape[0]}, shape 1: {image1.shape[1]}")
             K1 = read_pose_3dscanner(v[i][1])[:, :-1] if os.path.exists(v[i][1]) else dataset_K
             scale = W / dataset_W
@@ -588,7 +584,7 @@ def request_NVLAD_redir(request):
                 depth_image = image1
             elif dataset_info["type"] == "3DS":
                 # Convert to 3D points
-                depth_image = read_image_and_remove_exif(v[i][3], exif_rotation)  # 读取深度图
+                depth_image = read_image_and_remove_exif(v[i][3], dataset_EXIF)  # 读取深度图
                 print(f"depth_image shape 0: {depth_image.shape[0]}, shape 1: {depth_image.shape[1]}")
                 depth_image = cv2.resize(depth_image, (W, H), interpolation=cv2.INTER_NEAREST)  # 调整深度图size
                 model_3dpoints_DATASET, remove_list, camera_3dpoints_DATASET, point_valid_list = pixel_to_model(

@@ -52,8 +52,8 @@ def get_unity_rotation_matrix(rotation_deg_z, EPSILON=1e-5):
     unity_rotation_matrix[np.abs(unity_rotation_matrix)<EPSILON] = 0
     return unity_rotation_matrix
 
-def exifori_to_unity_rotation_matrix(image_path):
-    exif_orientation = piexif.load(image_path)["0th"][274]  # 或者直接通过参数传递exif_orientation
+def exifori_to_unity_rotation_matrix(exif_orientation):
+    # exif_orientation = piexif.load(image_path)["0th"][274]  # 或者直接通过参数传递exif_orientation
     valid_orientation = (0, 3, 6, 8)
     if exif_orientation not in valid_orientation:
         exif_orientation = 0
