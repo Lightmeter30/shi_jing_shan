@@ -6,8 +6,43 @@ import os
 from typing import List, Dict, Any
 # import pandas as pd
 from .logger_config import logger
+from media_app.models import *
+from django.db import transaction
 
 DB_PATH = os.path.join(settings.BASE_DIR, 'AR_platform.db')
+
+def insert_one_dataset(name: str, abs_dataset_dir: str, base_dir: str, info_path: str, config_path: str) -> None:
+    '''
+    插入单条数据（原子性保证）
+    '''
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    with open(info_path, 'r') as f:
+        info = json.load(f)
+
+    with transaction.atomic():
+        # 创建并保存 Dataset 实例
+        dataset_instance = Dataset.objects.create(
+            name=name,
+            file_path=os.path.relpath(abs_dataset_dir, base_dir),
+            info=info,
+            config=config,
+            old_config=config
+        )
+
+        # 遍历并保存 DatasetFile 实例
+        for file in os.listdir(abs_dataset_dir):
+            file_path = os.path.join(abs_dataset_dir, file)
+            if os.path.isfile(file_path):
+                if file.endswith('.json'):
+                    continue
+                file_type = 'object' if file.endswith('.obj') else 'ply' if file.endswith('.ply') else 'unknown'
+                DatasetFile.objects.create(
+                    dataset=dataset_instance,
+                    name=file,
+                    file_path=os.path.relpath(file_path, base_dir),
+                    file_type=file_type
+                )
 
 def insert_sence_batch(records: List[Dict[str, Any]], da_path = DB_PATH) -> None:
     """
@@ -35,21 +70,6 @@ def insert_sence_batch(records: List[Dict[str, Any]], da_path = DB_PATH) -> None
             logger.info(f"Inserted {len(records)} records into SCENCE table.")
     except Exception as e:
         logger.error(f"Error inserting records: {e}")
-
-def delete_scence_by_name(name: str, db_path: str = DB_PATH) -> bool:
-    """
-    根据名称删除 SCENCE 表中的记录
-    """
-    try:
-        with sqlite3.connect(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM SCENCE WHERE NAME = ?", (name,))
-            conn.commit()
-            logger.info(f"Deleted records with NAME '{name}' from SCENCE table.")
-            return cursor.rowcount > 0
-    except Exception as e:
-        logger.error(f"Error deleting records: {e}")
-        return False
 
 def get_config_field(scence_id: int, db_path: str = DB_PATH) -> Dict[str, Any]:
     """

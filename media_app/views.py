@@ -1,14 +1,17 @@
 # media_app/views.py
 import json
+import io
 
 from django.shortcuts import render
-from django.http import JsonResponse
+from django.http import JsonResponse, FileResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.core.files.storage import FileSystemStorage
+from django.utils.text import get_valid_filename
+from django.db import transaction
 # from django.conf import settings
 from django_project import settings
-from .models import Image, Video
-from .forms import VideoForm, ImageForm
+from .models import *
+from .forms import *
 from utils.upload import new_name, new_dir_name
 from utils.calib3d import *
 from utils.draw import *
@@ -16,7 +19,7 @@ from utils.nvlad_utils import *
 from utils.times import timer
 from utils.logger_config import logger
 from utils.vggt_utils import *
-from utils.sqlite import insert_sence_batch, delete_scence_by_name, get_config_field, get_all_scences
+from utils.sql import insert_one_dataset, get_config_field
 from utils.exif_utils import exifori_to_unity_rotation_matrix
 # from utils.image_preprocess import process_single_image
 
@@ -55,9 +58,8 @@ def upload_datasets(request):
         if not datasets:
             return JsonResponse({'error': '缺少 datasets 参数'}, status=400)
         results = []
-        records = []
         for dataset in datasets:
-            file_name = dataset.name
+            file_name = get_valid_filename(dataset.name)
             base_name, ext = os.path.splitext(file_name)
             if ext in ['.gz', '.tgz'] and file_name.endswith('.tar.gz'):
                 base_name = file_name.replace('.tar.gz', '')
@@ -66,8 +68,7 @@ def upload_datasets(request):
             
             # 解压目标子目录（与文件同名）
             file_extract_dir = os.path.join(target_path, base_name)
-
-            if os.path.exists(file_extract_dir):
+            if Dataset.objects.filter(name=base_name).exists():
                 results.append({
                     'filename': file_name,
                     'status': f'数据集 {base_name} 已存在, 请重命名后上传',
@@ -75,7 +76,6 @@ def upload_datasets(request):
                 continue
 
             os.makedirs(file_extract_dir, exist_ok=True)
-
             # 保存上传的压缩包为临时文件
             temp_path = os.path.join(target_path, file_name)
             # 保存上传的压缩包
@@ -85,41 +85,33 @@ def upload_datasets(request):
             # 解压缩
             try:
                 config_path = os.path.join(file_extract_dir, 'config.json')
-                config = {}
+                info_path = os.path.join(file_extract_dir, 'info.json')
                 if file_name.endswith('.zip'):
                     with zipfile.ZipFile(temp_path, 'r') as zip_ref:
                         zip_ref.extractall(file_extract_dir)
-                    with open(config_path, 'r') as f:
-                        config = json.load(f)
-                    records.append({
-                        'NAME': base_name,
-                        'CONFIG': config,
-                        'CREATE_DATE': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    })
+                    if not os.path.exists(config_path) or not os.path.exists(info_path):
+                        raise ValueError("缺少 config.json 或 info.json 文件")
+                    insert_one_dataset(base_name, file_extract_dir, base_dir, info_path, config_path)
                     status = '解压成功'
                 elif file_name.endswith(('.tar', '.tar.gz', '.tgz')):
                     with tarfile.open(temp_path, 'r:*') as tar_ref:
                         tar_ref.extractall(file_extract_dir)
-                    with open(config_path, 'r') as f:
-                        config = json.load(f)
-                    records.append({
-                        'NAME': base_name,
-                        'CONFIG': config,
-                        'CREATE_DATE': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    })
-                    status = '解压成功'
+                    if not os.path.exists(config_path) or not os.path.exists(info_path):
+                        raise ValueError("缺少 config.json 或 info.json 文件")
+                    insert_one_dataset(base_name, file_extract_dir, base_dir, info_path, config_path)
+                    status = '数据集处理成功'
                 else:
                     status = '不支持的格式'
             except Exception as e:
-                status = f'解压失败: {str(e)}'
+                if os.path.exists(file_extract_dir):
+                    shutil.rmtree(file_extract_dir)
+                status = f'数据集处理失败: {str(e)}'
             finally:
                 os.remove(temp_path)  # 清理临时文件
-            
-            results.append({
-                'filename': file_name,
-                'status': status,
-            })
-        insert_sence_batch(records)
+                results.append({
+                    'filename': file_name,
+                    'status': status,
+                })
         return JsonResponse({'message': '批量处理完成', 'results': results})
     return JsonResponse({'error': '仅支持 POST 请求'}, status=405)
 
@@ -131,7 +123,12 @@ def get_scence_list(request):
     if request.method != 'GET':
         return JsonResponse({'error': 'GET request required'}, status=400)
     try:
-        records = get_all_scences()
+        # 获取所有记录
+        if not Dataset.objects.exists():
+            return JsonResponse({'items': []}, status=200)
+        records = Dataset.objects.all().values('id', 'name')
+        # 字段重命名
+        records = [{'scenceName': r['name'], 'scenceKey': str(r['id'])} for r in records]
         return JsonResponse({'items': records}, status=200)
     except Exception as e:
         logger.error(f"Error fetching scence list: {e}")
@@ -150,7 +147,8 @@ def get_config_by_key(request):
         return JsonResponse({'error': 'key parameter is required'}, status=400)
     
     try:
-        config = get_config_field(key)
+        # config = get_config_field(key)
+        config = Dataset.objects.get(id=key).config
         if not config:
             return JsonResponse({'error': 'No records found for the given key'}, status=404)
         return JsonResponse(config, status=200)
@@ -170,9 +168,14 @@ def delete_scence(request):
     if not name:
         return JsonResponse({'error': 'name parameter is required'}, status=400)
     
+    if not Dataset.objects.exists(name=name):
+        logger.warning(f"No records found with NAME {name}")
+        return JsonResponse({'error': f'No records found with NAME {name}'}, status=404)
+
     try:
-        success = delete_scence_by_name(name)
-        if success:
+        with transaction.atomic():
+            Dataset.objects.delete(name=name)
+        
             rm_scence_dir = os.path.join(settings.MEDIA_ROOT, 'images', name)
             rm_scence_log_dir = os.path.join(settings.MEDIA_ROOT, 'nvlabs', name)
             if os.path.exists(rm_scence_dir):
@@ -181,12 +184,67 @@ def delete_scence(request):
                 shutil.rmtree(rm_scence_log_dir)
             logger.info(f"Successfully deleted records with NAME {name}")
             return JsonResponse({'message': f'Successfully deleted records with NAME {name}'}, status=200)
-        else:
-            logger.warning(f"No records found with NAME {name}")
-            return JsonResponse({'error': f'No records found with NAME {name}'}, status=404)
     except Exception as e:
         logger.error(f"Error deleting records: {e}")
         return JsonResponse({'error': 'Failed to delete records'}, status=500)
+
+@csrf_exempt
+def update_config(request):
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST method required'}, status=400)
+    key = int(request.GET.get('key', '-1'))
+    if key == -1:
+        return JsonResponse({'error': 'key required'}, status=400)
+    new_config = json.loads(request.POST.get('config', ''))
+    if new_config == '':
+        return JsonResponse({'error': 'the new config is null!'}, status=400)
+    try:
+        target = Dataset.objects.get(id=key)
+        target.old_config = target.config
+        target.config = new_config
+        target.save()
+    except Exception as e:
+        logger.error(f"the error is {e}")
+        return JsonResponse({'error': f'{e}'}, status=400)
+    return JsonResponse({'message': f'配置更新成功!'}, status=200)
+
+@csrf_exempt
+def get_single_file_by_id(request):
+    if request.method != 'GET':
+        return JsonResponse({'error': 'GET request required'}, status=400)
+    key = int(request.GET.get('key', '-1'))
+    if key == -1:
+        return JsonResponse({'error': 'key required'}, status=400)
+    try:
+        dataset_file = DatasetFile.objects.get(id=key)
+    except Exception as e:
+        logger.error(f'error info: {e}')
+        return JsonResponse({'error': 'there is no file matching the given key!'}, status=404)
+    base_dir = os.path.abspath(settings.MEDIA_ROOT)
+    file_path = os.path.join(base_dir, dataset_file.file_path)
+    file_name = os.path.basename(file_path)
+    if not os.path.exists(file_path):
+        return JsonResponse({'error': 'there is no file matching the file path'}, status=404)
+    return FileResponse(open(file_path, 'rb'), as_attachment=True, filename=file_name)
+
+def get_multi_file_by_id(request):
+    if request.method != 'GET':
+        return JsonResponse({'error': 'GET request required'}, status=400)
+    key = int(request.GET.get('key', '-1'))
+    if key == -1:
+        return JsonResponse({'error': 'key required'}, status=400)
+    files = DatasetFile.objects.filter(dataset_id=key)
+    if len(files) == 0:
+        return JsonResponse({'error': 'there is no files under this scence!'}, status=404)
+    base_dir = os.path.abspath(settings.MEDIA_ROOT)
+    file_list = [(f.name, os.path.join(base_dir, f.file_path)) for f in files]
+    
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+        for name, file_path in file_list:
+            zip_file.write(file_path, arcname=name)
+    zip_buffer.seek(0)
+    return FileResponse(zip_buffer, as_attachment=True, filename='archive.zip')
 
 def upload_video(request):
     if request.method == 'POST':
@@ -409,7 +467,7 @@ def request_NVLAD_redir(request):
     M_DATASET_CV2 = compute_M_A2B(dataset_info['coordinate'])
     M_CV2_TARGET = compute_M_A2B({'X': 'right', 'Y': 'down', 'Z': 'forward'}, TARGET)
     M_DATASET_TARGET = compute_M_A2B(dataset_info['coordinate'], TARGET)
-    # '''
+    '''
     target_pose_path = os.path.join(exter_loc, 'frame-000055.pose.txt')
     # target_image_path = os.path.join(img_loc, 'frame-000000.color.jpg')
     target_image_path = '/home/takune/relocation/shi_jing_shan/media/images/gxl_03/color/frame-000000.color.jpg'
