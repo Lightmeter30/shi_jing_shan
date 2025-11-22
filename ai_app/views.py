@@ -4,6 +4,8 @@ from django.views.decorators.csrf import csrf_exempt
 import json
 import requests
 from utils.times import timer
+from utils.logger_config import logger
+import pdb
 
 @timer
 @csrf_exempt
@@ -27,32 +29,24 @@ def chat_to_ollama(request):
     OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1/chat/completions"
 
     if request.method == 'POST':
-        message = request.POST.get('message', '')
-        prompt = request.POST.get('prompt', '')
+        # pdb.set_trace()
+        print(request.POST)
+        print(request.body)
+        print(request.GET)
+        message = request.POST.get('messages', '')
         MODEL_NAME = request.POST.get('model', "qwen2.5:72b")
-
+        print(type(message))
+        print(message)
 
         # 构建请求数据
-        data = {
-            "model": MODEL_NAME,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": prompt
-                },
-                {
-                    "role": "user",
-                    "content": message
-                }
-            ],
-            "stream": False
-        }
+        data = json.loads(request.body)
         try:
             response = requests.post(OLLAMA_BASE_URL, json=data)
             response.raise_for_status()  # 检查请求是否成功
             ai_response = response.json()
             return JsonResponse(ai_response)
         except requests.exceptions.RequestException as e:
+            logger.error(f"Ollama API请求失败: {str(e)}")
             return JsonResponse({'error': str(e)}, status=500)
     else:
         return JsonResponse({'error': 'Invalid request method'}, status=400)

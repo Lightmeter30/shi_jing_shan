@@ -4,6 +4,8 @@ from django.urls import path
 from .views import upload_datasets,upload_video, upload_image, upload_multiple_images, upload_multiple_videos, request_colmap_auto, \
     request_colmap, request_NVLAD, request_NVLAD_redir, test_read_image, get_scence_list, get_config_by_key, delete_scence, \
         get_single_file_by_id, get_multi_file_by_id, update_config
+        
+from .outdoor_views import vggt_camera_locate
 
 urlpatterns = [
     path('upload_datasets/', upload_datasets, name='upload_datasets'),
@@ -27,3 +29,8 @@ urlpatterns = [
     path('get_multi_file/', get_multi_file_by_id, name='get_multi_file'),
     path('update_config/', update_config, name='update_config'),
 ]
+
+# Outdoor PLT
+urlpatterns.extend([
+    path('vggt_camera_locate/', vggt_camera_locate, name='vggt_camera_locate'),
+])

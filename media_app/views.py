@@ -128,11 +128,11 @@ def get_scence_list(request):
             return JsonResponse({'items': []}, status=200)
         records = Dataset.objects.all().values('id', 'name')
         # 字段重命名
-        records = [{'scenceName': r['name'], 'scenceKey': str(r['id'])} for r in records]
+        records = [{'sceneName': r['name'], 'sceneKey': str(r['id'])} for r in records]
         return JsonResponse({'items': records}, status=200)
     except Exception as e:
-        logger.error(f"Error fetching scence list: {e}")
-        return JsonResponse({'error': 'Failed to fetch scence list'}, status=500)
+        logger.error(f"Error fetching scene list: {e}")
+        return JsonResponse({'error': 'Failed to fetch scene list'}, status=500)
 
 @csrf_exempt
 def get_config_by_key(request):
@@ -147,8 +147,10 @@ def get_config_by_key(request):
         return JsonResponse({'error': 'key parameter is required'}, status=400)
     
     try:
+        logger.info(f"Fetching config for key: {key}")
         # config = get_config_field(key)
         config = Dataset.objects.get(id=key).config
+        print(str(config))
         if not config:
             return JsonResponse({'error': 'No records found for the given key'}, status=404)
         return JsonResponse(config, status=200)
@@ -431,7 +433,7 @@ def request_NVLAD_redir(request):
     # 是否将P1的旋转矩阵和位移矩阵分开
     is_divide = False
     # 是否将K1和K3设置为相等
-    is_K_equal = True
+    is_K_equal = False
     # 测试时使用, 计算PnPRANSAC结果与GT pose的误差
     error_metrics = None
     # 是否打印debug信息
@@ -467,25 +469,6 @@ def request_NVLAD_redir(request):
     M_DATASET_CV2 = compute_M_A2B(dataset_info['coordinate'])
     M_CV2_TARGET = compute_M_A2B({'X': 'right', 'Y': 'down', 'Z': 'forward'}, TARGET)
     M_DATASET_TARGET = compute_M_A2B(dataset_info['coordinate'], TARGET)
-    '''
-    target_pose_path = os.path.join(exter_loc, 'frame-000055.pose.txt')
-    # target_image_path = os.path.join(img_loc, 'frame-000000.color.jpg')
-    target_image_path = '/home/takune/relocation/shi_jing_shan/media/images/gxl_03/color/frame-000000.color.jpg'
-    UNITY_ROTATION_MATRIX = exifori_to_unity_rotation_matrix(dataset_EXIF)
-    target_DATASET = read_pose_3dscanner(target_pose_path)
-    target_DATASET = np.vstack((target_DATASET, np.array([0,0,0,1])))
-    logger.info(f"target_DATASET: {target_DATASET}")
-    target_CV2 = transfer_Pose_from_A2B(target_DATASET, M_DATASET_CV2)
-    target = transfer_Pose_from_A2B(target_CV2, M_CV2_TARGET)
-    target = UNITY_ROTATION_MATRIX @ target # Apply the unity rotation matrix
-    return JsonResponse({
-      'message': 'Folder Found',
-      'saved_path': ["/home/takune/relocation/shi_jing_shan/media/nvlabs/gxl_02/color/query_20250521030653_a90b882970/query_folder/image.jpg"],
-      'positions': {
-        'image.jpg': target[:3,:].tolist()
-      }
-    }, status=200)
-    # '''
     if req_loc[-1] != '/':
         req_loc = req_loc + '/'
     if src_loc[-1] != '/':
@@ -514,7 +497,25 @@ def request_NVLAD_redir(request):
     if camera_matrix is not None:
         camera_matrix = json.loads(camera_matrix)
     saved_images, qintrinsic = save_query_images(images, tempimages, tempquery, camera_matrix)
-    
+    # '''
+    target_pose_path = os.path.join(exter_loc, 'frame-000055.pose.txt')
+    # target_image_path = os.path.join(img_loc, 'frame-000000.color.jpg')
+    target_image_path = '/home/takune/relocation/shi_jing_shan/media/images/sjs01/color/frame-000000.color.jpg'
+    UNITY_ROTATION_MATRIX = exifori_to_unity_rotation_matrix(dataset_EXIF)
+    target_DATASET = read_pose_3dscanner(target_pose_path)
+    target_DATASET = np.vstack((target_DATASET, np.array([0,0,0,1])))
+    logger.info(f"target_DATASET: {target_DATASET}")
+    target_CV2 = transfer_Pose_from_A2B(target_DATASET, M_DATASET_CV2)
+    target = transfer_Pose_from_A2B(target_CV2, M_CV2_TARGET)
+    target = UNITY_ROTATION_MATRIX @ target # Apply the unity rotation matrix
+    return JsonResponse({
+      'message': 'Folder Found',
+      'saved_path': ["/home/takune/relocation/shi_jing_shan/media/nvlabs/gxl_02/color/query_20250521030653_a90b882970/query_folder/image.jpg"],
+      'positions': {
+        'image.jpg': target[:3,:].tolist()
+      }
+    }, status=200)
+    # '''
     # Run NetVLAD matching
     command = f'cd {settings.NetVLAD_PATH} && bash match_and_cal_pose.sh {req_loc} {src_loc} {tempfolder}'
     os.system(command)
