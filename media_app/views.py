@@ -425,6 +425,61 @@ def test_read_image(request):
 
 @timer
 @csrf_exempt
+def request_obj_pose_estimate(request):
+    '''
+    请求参数(Params): obj_name: str 物体名称
+    请求体(Body): image: File 物体图片列表
+    '''
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST request required'}, status=400)
+    obj_name = request.GET.get('obj_name', 'sonar')
+    image = request.FILES.get('image', None)
+    if image is None:
+        return JsonResponse({'error': 'post image required'}, status=404)
+    # TODO: 后续TARGET最好作为参数从前端传过来
+    TARGET = {'X': 'right', 'Y': 'up', 'Z': 'forward'}
+    # Save uploaded image to a temporary location
+    req_loc = os.path.join(settings.MEDIA_ROOT, 'obj_pose_est', new_dir_name('query'))
+    result_loc = os.path.join(req_loc, 'result')
+    if not os.path.exists(req_loc):
+        os.makedirs(req_loc)
+    if not os.path.exists(result_loc):
+        os.makedirs(result_loc)
+    image_path = os.path.join(req_loc, get_valid_filename(image.name))
+    with open(image_path, 'wb+') as f:
+        for chunk in image.chunks():
+            f.write(chunk)
+    # ================== 新增：读取图像尺寸 ==================
+    img = read_image(image_path)
+    H, W = img.shape[0], img.shape[1]
+    logger.info(f"[Image Size] H = {H}, W = {W}")
+    # ======================================================
+    # ([[485, 0, 237], [0., 485, 320], [0, 0, 1]])
+    fx, fy, cx, cy = 485.0, 485.0, 237.0, 320.0
+    if H < W:
+        cx, cy = cy, cx
+    # fx, fy, cx, cy = 1310.3276712918655, 1310.3276712918655, 539.5, 719.5
+    # fx, fy, cx, cy = 1446.9339683809533, 1446.9339683809533, 956.7939376857139, 726.6716103714294
+    logger.info(f"[Camera Intrinsic] fx: {fx}, fy: {fy}, cx: {cx}, cy: {cy}")
+    # Run NetVLAD matching
+    command = f'cd {settings.OnePose_PATH} && bash inference.sh {obj_name} {result_loc} {image_path} {fx} {fy} {cx} {cy}'
+    os.system(command)
+    
+    # Process results & the pose is in camera coordinate (OpenCV) system
+    pose_w2c_cv2 = np.loadtxt(os.path.join(result_loc, 'pred_poses.txt'))
+    pose_w2c_cv2 = np.vstack((pose_w2c_cv2, np.array([0,0,0,1])))
+    M_CV2_TARGET = compute_M_A2B({'X': 'right', 'Y': 'down', 'Z': 'forward'}, TARGET)
+    pose_w2c_target = transfer_Pose_from_A2B(pose_w2c_cv2, M_CV2_TARGET)
+    pose_c2w_target = invert_Pose_Matrix(pose_w2c_target)
+    pose = pose_c2w_target[:3, :]
+
+    return JsonResponse({
+        'message': 'Object Pose Estimation OK!',
+        'pose': pose.tolist()
+        }, status=200)
+
+@timer
+@csrf_exempt
 def request_NVLAD_redir(request):
     '''request_NVLAD_redir DOC'''
     if request.method != 'POST':
@@ -497,7 +552,7 @@ def request_NVLAD_redir(request):
     if camera_matrix is not None:
         camera_matrix = json.loads(camera_matrix)
     saved_images, qintrinsic = save_query_images(images, tempimages, tempquery, camera_matrix)
-    # '''
+    '''
     target_pose_path = os.path.join(exter_loc, 'frame-000055.pose.txt')
     # target_image_path = os.path.join(img_loc, 'frame-000000.color.jpg')
     target_image_path = '/home/takune/relocation/shi_jing_shan/media/images/sjs01/color/frame-000000.color.jpg'

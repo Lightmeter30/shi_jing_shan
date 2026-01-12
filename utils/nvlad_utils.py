@@ -166,14 +166,14 @@ def process_predictions(predictions_file, intri_loc, exter_loc, depth_loc):
                         (ims[1], 
                          os.path.join(intri_loc, simname.split('.')[0] + '.intrinsic_color.txt'),
                          os.path.join(exter_loc, simname.split('.')[0] + '.pose.txt'),
-                         os.path.join(depth_loc, simname.split('.')[0] + '.depth.jpg'),
+                         os.path.join(depth_loc, simname.split('.')[0] + '.depth.png'),
                          simname.split('.')[0])]
                 else:
                     pred_imgs[qimname].append(
                         (ims[1],
                          os.path.join(intri_loc, simname.split('.')[0] + '.intrinsic_color.txt'),
                          os.path.join(exter_loc, simname.split('.')[0] + '.pose.txt'),
-                         os.path.join(depth_loc, simname.split('.')[0] + '.depth.jpg'),
+                         os.path.join(depth_loc, simname.split('.')[0] + '.depth.png'),
                          simname.split('.')[0]))
     
     return pred_imgs
