@@ -1,6 +1,7 @@
 # media_app/views.py
 import json
 import io
+import uuid
 
 from django.shortcuts import render
 from django.http import JsonResponse, FileResponse
@@ -12,6 +13,8 @@ from django.db import transaction
 from django_project import settings
 from .models import *
 from .forms import *
+from .tasks import process_dataset_task
+
 from utils.upload import new_name, new_dir_name
 from utils.calib3d import *
 from utils.draw import *
@@ -50,69 +53,67 @@ def upload_datasets(request):
     #     return response
 
     if request.method == 'POST':
-        datasets = request.FILES.getlist('datasets')
+        dataset = request.FILES.get('dataset')
+        name = request.POST.get('name', '')
+        type_str = request.POST.get('type', '')
+        z_near = float(request.POST.get('z_near', '0.01'))
+        z_far = float(request.POST.get('z_far', '8'))
+        if name == '':
+            return JsonResponse({'error': '缺少 name 参数'}, status=400)
+        if type_str == '':
+            return JsonResponse({'error': '缺少 type 参数'}, status=400)
+        
         base_dir = os.path.abspath(settings.MEDIA_ROOT)
         target_path = os.path.abspath(os.path.join(base_dir, 'images/'))
         if not target_path.startswith(base_dir):
             return JsonResponse({'error': '不允许的路径'}, status=403)
-        if not datasets:
-            return JsonResponse({'error': '缺少 datasets 参数'}, status=400)
-        results = []
-        for dataset in datasets:
-            file_name = get_valid_filename(dataset.name)
-            base_name, ext = os.path.splitext(file_name)
-            if ext in ['.gz', '.tgz'] and file_name.endswith('.tar.gz'):
+        if not dataset:
+            return JsonResponse({'error': '缺少 dataset 参数'}, status=400)
+        file_name = get_valid_filename(dataset.name)
+        base_name, ext = os.path.splitext(file_name)
+        if ext in ['.gz', '.tgz'] and file_name.endswith('.tar.gz'):
                 base_name = file_name.replace('.tar.gz', '')
-            elif ext == '.gz' and file_name.endswith('.tgz'):
-                base_name = file_name.replace('.tgz', '')
+        elif ext == '.gz' and file_name.endswith('.tgz'):
+            base_name = file_name.replace('.tgz', '')
             
-            # 解压目标子目录（与文件同名）
-            file_extract_dir = os.path.join(target_path, base_name)
-            if Dataset.objects.filter(name=base_name).exists():
-                results.append({
-                    'filename': file_name,
-                    'status': f'数据集 {base_name} 已存在, 请重命名后上传',
-                })
-                continue
+        # 解压目标子目录（与文件同名）
+        output_dir = os.path.join(target_path, name)
+        file_extract_dir = os.path.join(target_path, 'dataset_{}'.format(uuid.uuid4().hex[:10]))
+        if Dataset.objects.filter(name=name).exists():
+            return JsonResponse({'error': f'数据集 {name} 已存在, 请重命名后上传'}, status=400)
 
-            os.makedirs(file_extract_dir, exist_ok=True)
-            # 保存上传的压缩包为临时文件
-            temp_path = os.path.join(target_path, file_name)
-            # 保存上传的压缩包
-            with open(temp_path, 'wb+') as f:
-                for chunk in dataset.chunks():
-                    f.write(chunk)
-            # 解压缩
-            try:
-                config_path = os.path.join(file_extract_dir, 'config.json')
-                info_path = os.path.join(file_extract_dir, 'info.json')
-                if file_name.endswith('.zip'):
-                    with zipfile.ZipFile(temp_path, 'r') as zip_ref:
-                        zip_ref.extractall(file_extract_dir)
-                    if not os.path.exists(config_path) or not os.path.exists(info_path):
-                        raise ValueError("缺少 config.json 或 info.json 文件")
-                    insert_one_dataset(base_name, file_extract_dir, base_dir, info_path, config_path)
-                    status = '解压成功'
-                elif file_name.endswith(('.tar', '.tar.gz', '.tgz')):
-                    with tarfile.open(temp_path, 'r:*') as tar_ref:
-                        tar_ref.extractall(file_extract_dir)
-                    if not os.path.exists(config_path) or not os.path.exists(info_path):
-                        raise ValueError("缺少 config.json 或 info.json 文件")
-                    insert_one_dataset(base_name, file_extract_dir, base_dir, info_path, config_path)
-                    status = '数据集处理成功'
-                else:
-                    status = '不支持的格式'
-            except Exception as e:
-                if os.path.exists(file_extract_dir):
-                    shutil.rmtree(file_extract_dir)
-                status = f'数据集处理失败: {str(e)}'
-            finally:
-                os.remove(temp_path)  # 清理临时文件
-                results.append({
-                    'filename': file_name,
-                    'status': status,
-                })
-        return JsonResponse({'message': '批量处理完成', 'results': results})
+        os.makedirs(file_extract_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+        # 保存上传的压缩包为临时文件
+        temp_path = os.path.join(target_path, file_name)
+        # 保存上传的压缩包
+        with open(temp_path, 'wb+') as f:
+            for chunk in dataset.chunks():
+                f.write(chunk)
+        # 启动数据集处理任务
+        # bash_script = os.path.join(settings.DEPTH_RENDERER_PATH, 'render_depth.sh')
+        logger.info(f"Starting dataset processing task for {file_name}")
+        logger.info(f"base_dir: {base_dir}")
+        logger.info(f"zip_path: {temp_path}")
+        logger.info(f"file_extract_dir: {file_extract_dir}")
+        logger.info(f"output_dir: {output_dir}")
+        logger.info(f"type: {type_str}")
+        logger.info(f"name: {name}")
+        logger.info(f"z_near: {z_near}")
+        logger.info(f"z_far: {z_far}")
+        # logger.info(f"bash_script: {bash_script}")
+        task_id = uuid.uuid4().hex
+        process_dataset_task.delay(
+            task_id=task_id,
+            file_name=file_name,
+            base_dir=base_dir,
+            zip_path=temp_path,
+            file_extract_dir=file_extract_dir,
+            output_dir=output_dir,
+            info={'Z_Near': z_near, 'Z_Far': z_far, 'type': type_str, 'name': name},
+            bash_script="/home/zwr/code/AR_backend/utils/dataset/render_depth.sh"
+        )
+        return JsonResponse({'message': '数据集上传任务已启动', 'task_id': task_id}, status=200)
     return JsonResponse({'error': '仅支持 POST 请求'}, status=405)
 
 @csrf_exempt
@@ -170,13 +171,13 @@ def delete_scence(request):
     if not name:
         return JsonResponse({'error': 'name parameter is required'}, status=400)
     
-    if not Dataset.objects.exists(name=name):
+    if not Dataset.objects.filter(name=name).exists():
         logger.warning(f"No records found with NAME {name}")
         return JsonResponse({'error': f'No records found with NAME {name}'}, status=404)
 
     try:
         with transaction.atomic():
-            Dataset.objects.delete(name=name)
+            Dataset.objects.filter(name=name).delete()
         
             rm_scence_dir = os.path.join(settings.MEDIA_ROOT, 'images', name)
             rm_scence_log_dir = os.path.join(settings.MEDIA_ROOT, 'nvlabs', name)

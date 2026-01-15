@@ -1,0 +1,1 @@
+celery -A django_project worker -l info -c 4

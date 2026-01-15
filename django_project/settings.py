@@ -23,6 +23,7 @@ COLMAP_PATH = 'colmap'
 # .../relocation/Patch-NetVLAD
 NetVLAD_PATH = os.path.join(BASE_DIR.parent, 'Patch-NetVLAD')
 OnePose_PATH = os.path.join(BASE_DIR.parent, 'OnePose_Plus_Plus')
+DEPTH_RENDERER_PATH = os.path.join(BASE_DIR.parent, 'depth_renderer')
 os.environ['MKL_THREADING_LAYER'] = 'GNU'
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 'mps', 'cpu'
 
@@ -53,9 +54,11 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'media_app',
+    'media_app.apps.MediaAppConfig',
     'ai_app',
     'corsheaders',
+    'django_celery_results',
+    'channels',
 ]
 
 MIDDLEWARE = [
@@ -88,7 +91,24 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'django_project.wsgi.application'
+# WSGI_APPLICATION = 'django_project.wsgi.application'
+ASGI_APPLICATION = "django_project.asgi.application"
+
+# Redis 消息队列
+CELERY_BROKER_URL = 'redis://127.0.0.1:6379/0'
+
+# 时区（非常重要）
+CELERY_TIMEZONE = 'Asia/Shanghai'
+
+# Channels settings
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [("127.0.0.1", 6379)],
+        },
+    },
+}
 
 # Database
 # https://docs.djangoproject.com/en/3.2/ref/settings/#databases

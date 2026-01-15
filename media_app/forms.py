@@ -27,5 +27,5 @@ class DatasetFileForm(forms.ModelForm):
         fields = ['dataset', 'file_path', 'file_type']
 
 
-class MultipleImageForm(forms.Form):
-  images = forms.FileField(widget=forms.ClearableFileInput(attrs={'multiple': True}))
+# class MultipleImageForm(forms.Form):
+#   images = forms.FileField(widget=forms.ClearableFileInput(attrs={'multiple': True}))
