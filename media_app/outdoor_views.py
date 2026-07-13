@@ -28,6 +28,20 @@ from accelerated_features.modules.xfeat import XFeat
 @csrf_exempt
 def vggt_camera_locate(request):
     '''request_NVLAD_redir DOC'''
+    res = np.array([
+        [1,0,0,0],
+        [0,1,0,0],
+        [0,0,1,0],
+        [0,0,0,1]
+        ])
+    return JsonResponse({
+      'message': 'Folder Found',
+      'saved_path': ["Directly return"],
+      'positions': {
+        'image.jpg': res[:3,:].tolist()
+      }
+    }, status=200)
+        
     if request.method != 'POST':
         return JsonResponse({'error': 'POST request required'}, status=400)
 

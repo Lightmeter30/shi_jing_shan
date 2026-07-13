@@ -95,7 +95,7 @@ def make_3ds_dataset(input_folder, output_folder, info):
     os.makedirs(output_folder + os.sep + 'intrinsic')
     os.makedirs(output_folder + os.sep + 'pose')
 
-    img_list = os.listdir(input_folder)
+    img_list = sorted(os.listdir(input_folder))
     count = 0
 
     # collect per-frame intrinsics to compute averages
@@ -200,4 +200,4 @@ def make_3ds_dataset(input_folder, output_folder, info):
     if os.path.exists(texture_path):
         shutil.copyfile(texture_path, output_folder + os.sep + 'textured_output.jpg')
 
-    return "数据集转换完毕"
+    return count

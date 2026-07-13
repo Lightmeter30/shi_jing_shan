@@ -644,7 +644,10 @@ def request_NVLAD_redir(request):
 
             
         # TODO: 根据前端采集的图片分辨率，修改K3
-        K3 = np.array([[485, 0, 237], [0., 485, 320], [0, 0, 1]])
+        # K3 = np.array([[485, 0, 237], [0., 485, 320], [0, 0, 1]])
+        K3 = np.array([[663.090174, 0.0, 231.800512],
+                        [0.0, 1306.47582, 338.112151],
+                        [0.0, 0.0, 1.0]])
         # Get ground truth pose if available
         if is_K_equal:
             ground_truth = os.path.join(exter_loc, qimname.split('.')[0] + '.pose.txt')

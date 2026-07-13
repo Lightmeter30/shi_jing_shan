@@ -26,6 +26,7 @@ def send_ws(task_id, stage, msg):
 @shared_task
 def process_dataset_task(task_id, file_name, base_dir, zip_path, file_extract_dir, output_dir, info, bash_script):
     base_name, ext = os.path.splitext(file_name)
+    img_num = 0
     config_path = os.path.join(output_dir, 'config.json')
     info_path = os.path.join(output_dir, 'info.json')
     try:
@@ -34,14 +35,14 @@ def process_dataset_task(task_id, file_name, base_dir, zip_path, file_extract_di
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(file_extract_dir)
                 if info.get('type') == '3DS':
-                    make_3ds_dataset(file_extract_dir, output_dir, info)
+                    img_num = make_3ds_dataset(file_extract_dir, output_dir, info)
                 insert_one_dataset(info['name'], output_dir, base_dir, info_path, config_path)
                 status = '解压成功'
         elif file_name.endswith(('.tar', '.tar.gz', '.tgz')):
             with tarfile.open(zip_path, 'r:*') as tar_ref:
                 tar_ref.extractall(file_extract_dir)
                 if info.get('type') == '3DS':
-                    make_3ds_dataset(file_extract_dir, output_dir, info)
+                    img_num = make_3ds_dataset(file_extract_dir, output_dir, info)
                 config_path = os.path.join(output_dir, 'config.json')
                 insert_one_dataset(info['name'], output_dir, base_dir, info_path, config_path)
                 status = '解压成功'
@@ -50,7 +51,7 @@ def process_dataset_task(task_id, file_name, base_dir, zip_path, file_extract_di
         os.remove(zip_path)
         shutil.rmtree(file_extract_dir)
         send_ws(task_id, "unzip", status)
-        send_ws(task_id, "bash", "开始执行深度图渲染脚本")
+        send_ws(task_id, "bash", f"开始执行深度图渲染脚本, 共有{img_num}帧, 请耐心等待")
         info_path = os.path.join(output_dir, 'info.json')
         with open(info_path, 'r') as f:
             info = json.load(f)
@@ -78,7 +79,7 @@ def process_dataset_task(task_id, file_name, base_dir, zip_path, file_extract_di
         for line in process.stdout:
             if 'Saved' in line:
                 idx += 1
-                send_ws(task_id, "render", f"已渲染深度图数量: {idx}")
+                send_ws(task_id, "render", f"共有{img_num}帧, 已渲染深度图{idx}帧, 还剩{img_num - idx}帧")
         process.wait()
         if process.returncode != 0:
             raise RuntimeError("Blender 渲染失败")

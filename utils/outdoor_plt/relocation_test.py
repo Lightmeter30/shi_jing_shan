@@ -110,11 +110,11 @@ def calculate_pose_unity(query_image_path, database_path, tmp_folder_path):
     _, images_tmp, _ = read_model(tmp_model_path, ext='.bin')
 
     query_image_name = os.path.basename(query_image_path)
-    pose_image0_db = get_image_pose_by_name(images_db, 'frame-000000.color.jpg')
-    pose_image0_tmp = get_image_pose_by_name(images_tmp, 'frame-000000.color.jpg')
+    pose_image1_db = get_image_pose_by_name(images_db, 'frame-000001.color.jpg')
+    pose_image1_tmp = get_image_pose_by_name(images_tmp, 'frame-000001.color.jpg')
     pose_image_query_tmp = get_image_pose_by_name(images_tmp, query_image_name)
-
-    pose_cv_w2c = pose_image_query_tmp @ np.linalg.inv(pose_image0_tmp) @ pose_image0_db
+    pose_cv_w2c = pose_image_query_tmp @ np.linalg.inv(pose_image1_tmp) @ pose_image1_db
+    
     pose_cv_c2w = np.linalg.inv(pose_cv_w2c)
     M_opencv2unity = compute_M_A2B('RDF', 'RUF')
     pose_unity_c2w = M_opencv2unity @ pose_cv_c2w @ np.linalg.inv(M_opencv2unity)
@@ -131,9 +131,16 @@ def relocate(image_path, database_path, tmp_folder_path):
 
 def print_pose(pose):
     for i in range(pose.shape[0]):
+        print('[', end='')
         for j in range(pose.shape[1]):
-            print(pose[i][j], end=' ')
-        print()
+            print(pose[i][j], end='')
+            if j < pose.shape[1] - 1:
+                print(',', end='')
+        print(']', end='')
+        if i < pose.shape[0] - 1:
+            print(',')
+        else:
+            print()
 
 def main():
     image_path = '/home/tcluan/0-Desktop/gxl_test.jpg'

@@ -1,1 +1,2 @@
+export CUDA_VISIBLE_DEVICES=4
 daphne -b 0.0.0.0 -p 8000 django_project.asgi:application
